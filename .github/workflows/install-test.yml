@@ -33,55 +33,17 @@ jobs:
             kind: deb
           - image: fedora:latest
             kind: rpm
-    container:
-      image: ${{ matrix.image }}
-      options: --privileged   # the web process sandbox needs user namespaces
-    env:
-      REPO: ${{ github.repository }}
-      WANT: ${{ github.event.release.tag_name || inputs.version }}
     steps:
-      - name: Tools for the test (not Arrow's own dependencies)
-        run: |
-          if [ "${{ matrix.kind }}" = deb ]; then
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates xvfb xauth dbus \
-              python3 binutils xz-utils
-          else
-            dnf install -y curl xorg-x11-server-Xvfb xauth dbus-daemon python3 rpm-build
-          fi
+      # The page sandbox and Fedora's image loaders run in bubblewrap, which needs user namespaces. A desktop allows
+      # them; GitHub's Ubuntu host restricts them, so lift that before starting the container.
+      - name: Allow user namespaces like a desktop does
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - uses: actions/checkout@v4
 
-      - name: Build the packages from this commit
-        if: ${{ inputs.source }}
-        run: |
-          if [ "${{ matrix.kind }}" = deb ]; then OUTPUT_DIR="$PWD" bash build-deb.sh; F="$(ls arrow-browser_*-1_all.deb)"
-          else bash build-rpm.sh; F="$(ls arrow-browser-*.noarch.rpm)"; fi  # Fedora adds its tag: -1.fc44
-          echo "PKG=$PWD/$F" >> "$GITHUB_ENV"
-
-      - name: Download the release package
-        if: ${{ !inputs.source }}
-        run: |
-          V="${WANT#v}"
-          if [ -z "$V" ]; then
-            V="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"
-          fi
-          echo "Testing Arrow $V"
-          if [ "${{ matrix.kind }}" = deb ]; then F="arrow-browser_${V}-1_all.deb"; else F="arrow-browser-${V}-1.noarch.rpm"; fi
-          curl -fsSLO "https://github.com/$REPO/releases/download/v$V/$F"
-          echo "PKG=$PWD/$F" >> "$GITHUB_ENV"
-
-      - name: Install it the way the README says
-        run: |
-          if [ "${{ matrix.kind }}" = deb ]; then
-            DEBIAN_FRONTEND=noninteractive apt-get install -y "$PKG"
-          else
-            dnf install -y "$PKG"
-          fi
-          command -v arrow-browser
-
-      - name: Start it as a normal user
-        run: |
-          useradd -m tester
-          cp tools/smoke-test.py /home/tester/ && chown tester /home/tester/smoke-test.py
-          su tester -c "cd ~ && dbus-run-session -- xvfb-run -a python3 smoke-test.py"
+      - name: Install and start Arrow on ${{ matrix.image }}
+        run: >
+          docker run --rm --privileged -v "$PWD:/src"
+          -e KIND=${{ matrix.kind }} -e REPO=${{ github.repository }}
+          -e WANT=${{ github.event.release.tag_name || inputs.version }} -e SOURCE=${{ inputs.source || false }}
+          ${{ matrix.image }} bash /src/.github/install-test.sh
