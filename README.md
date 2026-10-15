@@ -6,17 +6,23 @@
 
 <p><b>A tiny, fast, privacy-first web browser for Linux.</b></p>
 
+<p>Blocks ads and trackers out of the box, runs well on older computers, and installs in seconds.</p>
+
 [![Latest release](https://img.shields.io/github/v/release/Sangam1112/Arrow-Browser?label=release&color=blue)](https://github.com/Sangam1112/Arrow-Browser/releases/latest)
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20Debian%20%7C%20Fedora%20%7C%20RHEL%20family-orange.svg)](#-install)
 [![Installer](https://img.shields.io/badge/installer-~300%20KB-brightgreen.svg)](#-small-by-design)
 [![Updates](https://img.shields.io/badge/updates-signed%20(Ed25519)-ee6a3a.svg)](#-updates)
 
-[**Highlights**](#-highlights) · [**Screenshots**](#-screenshots) · [**Limitations**](#known-limitations) · [**Install**](#-install) · [**Privacy**](#-privacy)
+[**Highlights**](#-highlights) · [**Screenshots**](#-screenshots) · [**Install**](#-install) · [**Privacy**](#-privacy) · [**Limitations**](#known-limitations) · [**Contributing**](#-feedback--contributing)
 
 <br>
 
 <img src="docs/screenshots/arrow-tour.gif" width="860" alt="A short tour of Arrow Browser: the welcome setup, tabs, the padlock's site controls, the main menu and every Settings page">
+
+<br><br>
+
+<a href="https://github.com/Sangam1112/Arrow-Browser/releases/latest"><b>⬇️ Download the latest release</b></a> (.deb for Ubuntu, Debian and Mint · .rpm for Fedora) · <a href="#-install">Install guide</a>
 
 </div>
 
@@ -28,7 +34,7 @@
   <tr>
     <td width="25%" valign="top"><h3>🪶 Tiny</h3>A ~300 KB installer.</td>
     <td width="25%" valign="top"><h3>🛡️ Private</h3>Blocks trackers and ads from the first launch. No telemetry.</td>
-    <td width="25%" valign="top"><h3>⚡ Light</h3>Sleeps unused tabs to stay quick on older PCs.</td>
+    <td width="25%" valign="top"><h3>⚡ Quick on old PCs</h3>Sleeps unused tabs and shows which tab uses the most memory.</td>
     <td width="25%" valign="top"><h3>🔐 Safe</h3>Every page sandboxed, signed updates, passwords in your keyring.</td>
   </tr>
 </table>
@@ -37,30 +43,31 @@
 
 ## ✨ Highlights
 
-**🛡️ Privacy**
-- **Ad and tracker blocking** with weekly EasyList/EasyPrivacy updates. Sign-in pages and captchas keep working.
-- **No empty ad boxes or cookie banners:** the spaces ads leave and "Accept cookies" pop-ups are hidden (EasyList Cookie List). Nothing is accepted for you.
+- **Ad and tracker blocking** with weekly EasyList/EasyPrivacy updates, plus a **pop-up blocker** and hidden cookie banners. Sign-in pages and captchas keep working.
 - **Clean links:** strips `utm_*`, `fbclid` and other tracking tags, and skips tracking redirects.
-- **HTTPS only:** if a site has no secure version, you decide whether to continue.
-- **Pop-up blocker:** ad pop-ups never open, and other sites' pop-ups wait for your OK. Allow them for a site with one click, or under the 🔒 padlock.
+- **HTTPS only**, and no way past a bad certificate: the padlock is green only for a verified one.
 - **Per-site controls** under the 🔒 padlock: what was blocked on the page, ads, JavaScript, pop-ups, zoom and permissions, and clearing one site's cookies.
 - **Fingerprint protection:** third-party cookies blocked, WebRTC off, graphics details hidden, canvas and audio fingerprints disguised per site.
 - **Passwords in your system keyring** (GNOME Keyring, KWallet, KeePassXC), filled only when you click.
-- **Privacy report** showing what was blocked.
+- **Light on memory:** unused tabs sleep, **Tab Memory** shows which tab uses the most, and Low Memory Mode helps on older PCs.
 
-**🔐 Security**
+<details>
+<summary><b>All features</b></summary>
+
+**Privacy and security**
+- **No empty ad boxes or cookie banners:** the spaces ads leave and "Accept cookies" pop-ups are hidden (EasyList Cookie List). Nothing is accepted for you.
+- **Pop-ups:** ad pop-ups never open, and other sites' pop-ups wait for your OK. Allow them for a site with one click, or under the 🔒 padlock.
+- **Privacy report** showing what was blocked.
 - **Every page runs in a sandbox**, so a hacked page can't reach your files.
-- **No way past a bad certificate**, and a green padlock only for a verified one.
 - **Files that can run programs** (`.sh`, `.AppImage`, `.deb`, `.exe`, …) **ask before downloading**.
 
-**🧭 Extras**
+**Everyday use**
 - **Search shortcuts:** `w taj mahal` searches Wikipedia, `yt lofi` YouTube; add your own.
 - **Import** bookmarks and history from Firefox, Chrome, Brave, Edge, Vivaldi, Opera and more, and passwords from a `.csv` export.
-- **Dark mode for websites** that leaves already-dark sites alone.
-- **Tab Memory:** see which tab uses the most memory and suspend or close it.
+- **Dark and light themes**, and **dark mode for websites** that leaves already-dark sites alone.
 - **Search in Settings:** type in the box above the page list to find any option on any page.
-- **Same look everywhere:** the Lexend font and line icons ship with Arrow, with an orange accent to match the logo.
 - **Digital Wellbeing** (off by default): screen time per site, daily limits, break reminders and a greyscale bedtime mode. All of it stays on your computer.
+</details>
 
 ---
 
@@ -68,12 +75,16 @@
 
 <table>
   <tr>
-    <td align="center" valign="top"><b>Browsing</b><br><img src="docs/screenshots/browser.png" alt="Arrow Browser showing a Wikipedia article in three tabs" width="420"></td>
-    <td align="center" valign="top"><b>Padlock: certificate &amp; per-site controls</b><br><img src="docs/screenshots/site-controls.png" alt="Site popover with certificate details and per-site switches" width="420"></td>
+    <td align="center" valign="top"><b>Browsing</b><br><img src="docs/screenshots/browser.png" alt="Arrow Browser in its dark theme, showing a Wikipedia article in three tabs" width="420"></td>
+    <td align="center" valign="top"><b>Browsing, light theme</b><br><img src="docs/screenshots/browser-light.png" alt="Arrow Browser in its light theme, showing a Wikipedia article in three tabs" width="420"></td>
   </tr>
   <tr>
+    <td align="center" valign="top"><b>Padlock: certificate &amp; per-site controls</b><br><img src="docs/screenshots/site-controls.png" alt="Site popover with certificate details and per-site switches" width="420"></td>
     <td align="center" valign="top"><b>Main menu</b><br><img src="docs/screenshots/main-menu.png" alt="Main menu" width="420"></td>
+  </tr>
+  <tr>
     <td align="center" valign="top"><b>Tab Memory</b><br><img src="docs/screenshots/tab-memory.png" alt="Tab Memory dialog listing memory use per tab" width="420"></td>
+    <td align="center" valign="top"><b>Search in Settings</b><br><img src="docs/screenshots/settings-search.png" alt="Settings search showing only the options that mention cookie" width="420"></td>
   </tr>
 </table>
 
@@ -105,19 +116,9 @@
 
 ---
 
-<a id="known-limitations"></a>
-## ⚠️ Known limitations
-
-- **Security fixes for the web engine come with your Linux system updates**, sometimes weeks late. Keep your system up to date.
-- **No DRM:** Netflix, Spotify, Prime Video, Disney+ and similar sites won't play.
-- **Some sites may not work fully.** Try 🔒 padlock → **Identify as Chrome**. No passkeys, picture-in-picture, AV1 video or AVIF images yet.
-- **No extensions** and **no sync**. To move to another computer, use Settings → History & Data → **Back up**.
-- **Slower in heavy web apps** than Chromium-based browsers.
-- **Known bug:** rarely, a tab showing an Arrow page (such as an error page) freezes if you go fullscreen while another tab of the same site opens a popup. Close the tab and reopen the page.
-
----
-
 ## 📦 Install
+
+**Runs on** Ubuntu, Debian, Linux Mint and Fedora. RHEL, Rocky Linux, AlmaLinux and CentOS Stream should work but haven't been tried on a real machine yet; please [tell us](https://github.com/Sangam1112/Arrow-Browser/issues) how it goes. The package installs everything else it needs.
 
 Get the package from the [**Releases page**](https://github.com/Sangam1112/Arrow-Browser/releases/latest), or run:
 
@@ -144,8 +145,6 @@ sudo dnf install ./arrow-browser-${VERSION}-1.noarch.rpm
 
 Use `apt install`, not `dpkg -i`, so dependencies install too. Then start Arrow from your app menu or run `arrow-browser`. For saved passwords you need a keyring (GNOME Keyring, KWallet or KeePassXC).
 
-> RHEL, Rocky Linux, AlmaLinux and CentOS Stream should work but haven't been tried on a real machine yet. Please [tell us](https://github.com/Sangam1112/Arrow-Browser/issues) how it goes.
-
 ### From source (no root needed)
 
 ```bash
@@ -171,11 +170,7 @@ cd /tmp/arrow_fedora && ./install-fedora.sh
 
 ### 🔄 Updates
 
-Arrow checks for updates shortly after it starts, or use **Settings → About → Check for updates**, then click **Restart now**. An update that isn't signed with the project key is never installed.
-
-**Had Arrow before 1.0.0?** Copies from the old repository (1.6.9 and earlier) won't find this release, so install the 1.0.0 package once. Your bookmarks, history, passwords and settings stay, and Arrow updates itself from then on.
-
-What changed: [CHANGELOG.md](CHANGELOG.md); notes from before 1.0.0 are in [docs/HISTORY.md](docs/HISTORY.md).
+Arrow checks for updates shortly after it starts, or use **Settings → About → Check for updates**, then click **Restart now**. An update that isn't signed with the project key is never installed. What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 
 ### 🗑️ Uninstall
 
@@ -194,6 +189,8 @@ rm -rf ~/.config/arrow-browser ~/.cache/arrow-browser
 
 Saved passwords live in your system keyring: delete them first in **Settings → Privacy & Security → Saved passwords**.
 
+> **Had Arrow before 1.0.0?** Copies from the old repository (1.6.9 and earlier) won't find new releases, so install the 1.0.0 package once. Your bookmarks, history, passwords and settings stay, and Arrow updates itself from then on. Older release notes are in [docs/HISTORY.md](docs/HISTORY.md).
+
 ---
 
 ## 🧭 Keyboard shortcuts
@@ -210,10 +207,10 @@ No telemetry, analytics or accounts. Apart from the sites you visit, Arrow conne
 
 | What | To | When | Turn off |
 |---|---|---|---|
-| Update check | `api.github.com`, `raw.githubusercontent.com` | At startup and when you click *Check for updates* | n/a |
+| Update check | `api.github.com`, `raw.githubusercontent.com` | At startup and when you click *Check for updates* | Always on |
 | Ad and tracker lists | `easylist.to` | About once a week | Settings → Privacy & Security → *Keep the block lists up to date* |
 | Link-cleaning rules | `rules2.clearurls.xyz` (fallback `gitlab.com`) | About once a week | Same switch |
-| Link prefetch | links you hover over | While browsing (not in private windows) | n/a |
+| Link prefetch | links you hover over | While browsing | Always on, except in private windows |
 
 Your data stays in `~/.config/arrow-browser` and `~/.cache/arrow-browser`, and passwords in your keyring. Private windows save nothing.
 
@@ -235,6 +232,26 @@ Found a security problem? Open a [GitHub issue](https://github.com/Sangam1112/Ar
 Other browsers each ship their own web engine. Arrow uses the one your Linux desktop already has, so it is 150–500× smaller.
 
 > Arrow's sizes are from the 1.0.0 packages (.rpm and .deb), including its font and icons; the others are typical public figures.
+
+---
+
+<a id="known-limitations"></a>
+## ⚠️ Known limitations
+
+- **Security fixes for the web engine come with your Linux system updates**, sometimes weeks late. Keep your system up to date.
+- **No DRM:** Netflix, Spotify, Prime Video, Disney+ and similar sites won't play.
+- **Some sites may not work fully.** Try 🔒 padlock → **Identify as Chrome**. No passkeys, picture-in-picture, AV1 video or AVIF images yet.
+- **No extensions** and **no sync**. To move to another computer, use Settings → History & Data → **Back up**.
+- **Slower in heavy web apps** than Chromium-based browsers.
+
+Known bugs are tracked in [Issues](https://github.com/Sangam1112/Arrow-Browser/issues).
+
+---
+
+## 💬 Feedback & contributing
+
+- **Bugs and ideas:** [open an issue](https://github.com/Sangam1112/Arrow-Browser/issues). Say what you did, what you expected and your Linux version.
+- **Code:** Arrow is one Python file (`arrow_browser.py`) using GTK 3. Run the tests with `bash tools/run-tests.sh` (the window tests need a desktop session), and build the packages with `./build-deb.sh` and `./build-rpm.sh`.
 
 ---
 
