@@ -220,7 +220,7 @@ Besides the sites you visit, Arrow makes only these connections. Each server see
 | Ad and tracker block lists | `easylist.to` | About once a week | Yes: Settings → Privacy & Security → *Keep the block lists up to date* |
 | Cookie-banner list | `secure.fanboy.co.nz` | About once a week | Yes, same switch |
 | Link-cleaning rules | `rules2.clearurls.xyz` (backup: `gitlab.com`) | About once a week | Yes, same switch |
-| Link prefetch | Links you hover over | While browsing | Only in private windows |
+| Faster link opening (connects only; the page isn't loaded) | The site of a link you point at | While browsing | Only in private windows |
 
 Found a security problem? Please [report it privately](https://github.com/Sangam1112/Arrow-Browser/security/advisories/new) rather than in a public issue; see [SECURITY.md](SECURITY.md).
 
@@ -265,6 +265,6 @@ Known bugs are tracked in [Issues](https://github.com/Sangam1112/Arrow-Browser/i
 
 ## 📄 License
 
-© 2026 Sangam1112. Free software under the [GNU General Public License v3.0 or later](LICENSE). Releases up to 1.5.19 in the earlier repository were under the MIT License.
+© 2026 Sangam1112. Free software under the [GNU General Public License v3.0 or later](LICENSE).
 
 Bundled: the Lexend font (SIL Open Font License, [`assets/fonts/OFL.txt`](assets/fonts/OFL.txt)) and Lucide icons (ISC, [`assets/icons/LICENSE`](assets/icons/LICENSE)).
