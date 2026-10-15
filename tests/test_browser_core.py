@@ -1052,22 +1052,63 @@ class WebProcessCrashTests(unittest.TestCase):
         from types import SimpleNamespace
         from unittest import mock
         browser = SimpleNamespace(_crash_counts={}, homepage="about:blank", context_id=0,
-                                  statusbar=mock.Mock(), MAX_AUTO_RELOAD_CRASHES=3)
+                                  statusbar=mock.Mock(), MAX_AUTO_RELOAD_CRASHES=3,
+                                  CRASH_COUNT_WINDOW_SECONDS=300)
         webview = mock.Mock()
         webview.get_uri.return_value = "https://example.com/"
         with mock.patch.object(bb.GLib, "idle_add", lambda fn: fn()):
             bb.ArrowBrowserWindow.on_web_process_terminated(browser, webview, reason)
+        webview._browser = browser
         return webview
+
+    def crash_again(self, webview, reason=bb.WebKit2.WebProcessTerminationReason.CRASHED):
+        from unittest import mock
+        with mock.patch.object(bb.GLib, "idle_add", lambda fn: fn()):
+            bb.ArrowBrowserWindow.on_web_process_terminated(webview._browser, webview, reason)
 
     def test_crashed_tab_reloads(self):
         webview = self.terminate(bb.WebKit2.WebProcessTerminationReason.CRASHED)
         webview.load_uri.assert_called_once_with("https://example.com/")
+
+    def test_stops_reloading_after_repeated_crashes(self):
+        webview = self.terminate(bb.WebKit2.WebProcessTerminationReason.CRASHED)
+        for _ in range(3):
+            self.crash_again(webview)
+        self.assertEqual(webview.load_uri.call_count, 3, "reloaded three times, then stopped")
+        self.assertIn("keeps crashing", webview.load_html.call_args[0][0])
+
+    def test_crash_count_starts_again_after_a_quiet_spell(self):
+        webview = self.terminate(bb.WebKit2.WebProcessTerminationReason.CRASHED)
+        browser = webview._browser
+        count, last = browser._crash_counts[id(webview)]
+        browser._crash_counts[id(webview)] = (3, last - browser.CRASH_COUNT_WINDOW_SECONDS - 1)
+        self.crash_again(webview)
+        self.assertEqual(browser._crash_counts[id(webview)][0], 1)
+        self.assertEqual(webview.load_uri.call_count, 2, "a crash long after the last one is reloaded again")
 
     def test_out_of_memory_tab_shows_notice(self):
         webview = self.terminate(bb.WebKit2.WebProcessTerminationReason.EXCEEDED_MEMORY_LIMIT)
         webview.load_uri.assert_not_called()
         self.assertIn("ran out of memory", webview.load_html.call_args[0][0])
 
+
+
+class PrivateProfileFolderTests(unittest.TestCase):
+    """WebKit writes cookies.sqlite readable by everyone (644): the profile folders must keep other users out."""
+
+    def test_open_folder_is_closed_to_other_users(self):
+        import tempfile
+        folder = os.path.join(tempfile.mkdtemp(), "profile")
+        os.makedirs(folder, mode=0o755)
+        os.chmod(folder, 0o755)
+        bb.make_private_dir(folder)
+        self.assertEqual(os.stat(folder).st_mode & 0o777, 0o700)
+
+    def test_new_folder_is_private(self):
+        import tempfile
+        folder = os.path.join(tempfile.mkdtemp(), "a", "b")
+        bb.make_private_dir(folder)
+        self.assertEqual(os.stat(folder).st_mode & 0o077, 0)
 
 
 class SearchTests(unittest.TestCase):

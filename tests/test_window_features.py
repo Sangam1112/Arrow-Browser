@@ -666,6 +666,70 @@ class WindowFeatureTests(unittest.TestCase):
         spin(lambda: False, 2 * self.win.LOAD_RETRY_DELAY_MS / 1000)
         self.assertLessEqual(len(failures), 1 + self.win.MAX_AUTO_RETRY_LOAD_FAILURES, "kept retrying")
 
+    def test_failed_load_retry_gives_way_to_the_users_next_page(self):
+        # A load that fails after committing (the connection drops mid-page) still ends with FINISHED. That used to
+        # reset the retry count, so the tab retried every 600 ms forever; and the retry fired even after the user
+        # had gone somewhere else, dragging the tab back to the failing address.
+        self.addCleanup(self.close_new_tabs, self.win._tab_boxes())
+        wv = self.win.create_new_tab(self.base + "/blank")
+        self.assertTrue(spin(lambda: not wv.is_loading(), 10))
+        dead = f"http://127.0.0.1:{DEAD_PORT}/gone"
+        error = GLib.Error.new_literal(WebKit2.network_error_quark(), "Connection reset by peer",
+                                       int(WebKit2.NetworkError.FAILED))
+        wv._arrow_committed = True
+        self.win.on_load_failed(wv, WebKit2.LoadEvent.COMMITTED, dead, error)
+        self.win.on_load_changed(wv, WebKit2.LoadEvent.FINISHED)
+        self.assertEqual(self.win._load_failure_counts.get(id(wv)), 1, "FINISHED of a failed load reset the count")
+        wv.load_uri(self.base + "/blank?next")
+        self.assertTrue(spin(lambda: (wv.get_uri() or "").endswith("?next") and not wv.is_loading(), 10))
+        spin(lambda: False, 2 * self.win.LOAD_RETRY_DELAY_MS / 1000)
+        self.assertTrue((wv.get_uri() or "").endswith("?next"), f"the retry took the tab back to {wv.get_uri()}")
+
+    def test_page_that_crashes_after_loading_is_not_reloaded_forever(self):
+        # Every finished reload used to reset the crash count, so the "keeps crashing" page never came.
+        self.addCleanup(self.close_new_tabs, self.win._tab_boxes())
+        wv = self.win.create_new_tab(self.base + "/blank")
+        self.assertTrue(spin(lambda: not wv.is_loading(), 10))
+        for _ in range(self.win.MAX_AUTO_RELOAD_CRASHES + 1):
+            self.win.on_web_process_terminated(wv, WebKit2.WebProcessTerminationReason.CRASHED)
+            spin(lambda: wv.is_loading(), 2)
+            self.assertTrue(spin(lambda: not wv.is_loading(), 10))
+        self.assertTrue(spin(lambda: "keeps crashing" in (js(wv, "document.body.innerText") or ""), 5),
+                        "still reloading after repeated crashes")
+
+    def test_closed_window_stops_its_background_checks(self):
+        private = bb.ArrowBrowserWindow(private=True)
+        private.destroy()
+        self.assertTrue(spin(lambda: private._window_released, 5))
+        self.assertFalse(private._check_tab_suspension(), "the tab-sleep check kept running")
+        self.assertFalse(private._check_memory_pressure(), "the memory check kept running")
+        self.assertIsNone(getattr(private, "_memory_warning_handler", None), "still listening for low memory")
+        self.assertTrue(self.win._check_memory_pressure(), "the open window's check carries on")
+
+    def test_touchpad_ctrl_scroll_zooms_one_step_per_whole_unit(self):
+        wv = self.win.get_active_webview()
+        self.win.adjust_zoom(reset=True)
+        self.addCleanup(self.win.adjust_zoom, reset=True)
+
+        def scroll(delta_y):
+            event = Gdk.Event.new(Gdk.EventType.SCROLL)
+            event.scroll.direction = Gdk.ScrollDirection.SMOOTH
+            event.scroll.delta_y = delta_y
+            event.scroll.state = Gdk.ModifierType.CONTROL_MASK
+            self.assertTrue(self.win.on_webview_scroll(wv, event))
+
+        for _ in range(4):
+            scroll(0.2)  # a touchpad sends many small steps
+        self.assertAlmostEqual(wv.get_zoom_level(), 1.0, msg="zoomed before a whole wheel step added up")
+        scroll(0.2)
+        self.assertAlmostEqual(wv.get_zoom_level(), 0.9, places=2)
+        scroll(-1.0)  # a mouse wheel notch the other way
+        self.assertAlmostEqual(wv.get_zoom_level(), 1.0, places=2)
+
+    def test_address_bar_dns_lookup_only_for_what_the_user_types(self):
+        self.win.url_entry.set_text("example-not-typed.com")
+        self.assertIsNone(self.win._dns_typing_source, "the browser's own address change scheduled a DNS lookup")
+
     # ---- downloads ------------------------------------------------------
     def start_download(self, path):
         count = len(self.win.downloads_history)

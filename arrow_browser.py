@@ -708,6 +708,17 @@ def startup_urls_from_args(args):
     return urls
 
 
+def make_private_dir(path):
+    """Create `path` (if needed) so only this user can open it. WebKit writes cookies.sqlite readable by everyone
+    (644), and on systems where home folders are open (755) other users could otherwise read it."""
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        if os.stat(path).st_mode & 0o077:
+            os.chmod(path, 0o700)
+    except OSError as e:
+        print("Profile folder note:", e)
+
+
 def download_filename(suggested, uri=""):
     """A safe file name for a download: the server's suggested name (Content-Disposition), else the last part of
     the address. Never a path, and never a hidden file (a leading dot): a site could otherwise drop something
@@ -3738,8 +3749,8 @@ class ArrowBrowserWindow(Gtk.Window):
         self.apply_custom_css()
 
         # WebKit DataManager & WebContext for high performance caching
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        os.makedirs(CACHE_DIR, exist_ok=True)
+        make_private_dir(CONFIG_DIR)  # cookies and history: not for other users on this computer
+        make_private_dir(CACHE_DIR)
         
         if self.is_private and hasattr(WebKit2.WebsiteDataManager, 'new_ephemeral'):
             # Ephemeral manager: cookies/cache/storage live only in memory for
@@ -4105,6 +4116,7 @@ class ArrowBrowserWindow(Gtk.Window):
         self.zoom_indicator.hide()
         self.overlay.add_overlay(self.zoom_indicator)
         self._zoom_indicator_hide_source = None
+        self._zoom_scroll_accum = 0.0  # touchpad Ctrl+scroll: tiny deltas add up to one zoom step
 
         # Fullscreen notice: a page in fullscreen can draw anything, a fake address bar included, so say which
         # site it is and how to leave, as other browsers do.
@@ -4207,6 +4219,7 @@ class ArrowBrowserWindow(Gtk.Window):
         # purely in-memory (session state is kept in a Python dict, never
         # written to disk), so it doesn't weaken the private-window
         # no-trace-on-disk guarantee the way history/session saving would.
+        self._window_released = False  # the periodic checks below stop once this window has closed
         GLib.timeout_add_seconds(self.TAB_SUSPENSION_CHECK_INTERVAL_SECONDS, self._check_tab_suspension)
         # When the computer runs low on memory, put background tabs to sleep
         # right away (least recently used first) instead of waiting 15 minutes.
@@ -4220,7 +4233,9 @@ class ArrowBrowserWindow(Gtk.Window):
         # Linux Lite don't), which is why the check above reads /proc itself.
         try:
             self._memory_monitor = Gio.MemoryMonitor.dup_default()
-            self._memory_monitor.connect("low-memory-warning", self.on_low_memory_warning)
+            # Shared by every window: disconnected again in _release_window.
+            self._memory_warning_handler = self._memory_monitor.connect("low-memory-warning",
+                                                                        self.on_low_memory_warning)
         except Exception as e:
             print("Memory monitor note:", e)
 
@@ -5505,6 +5520,11 @@ class ArrowBrowserWindow(Gtk.Window):
     def _release_window(self):
         global _LIVE_WINDOW_COUNT
         self._wellbeing_stopped = True
+        self._window_released = True
+        handler = getattr(self, "_memory_warning_handler", None)
+        if handler is not None:
+            self._memory_monitor.disconnect(handler)
+            self._memory_warning_handler = None
         if wellbeing_tracker().dirty:
             wellbeing_tracker().save()
         _LIVE_WINDOW_COUNT -= 1
@@ -5622,6 +5642,8 @@ class ArrowBrowserWindow(Gtk.Window):
             self.statusbar.push(self.context_id, f"Ready | {uri}")
 
     def _check_tab_suspension(self):
+        if self._window_released:
+            return False
         if self.tab_suspension_enabled:
             now = time.monotonic()
             for tab_box in self._tab_boxes():
@@ -5633,6 +5655,8 @@ class ArrowBrowserWindow(Gtk.Window):
         return True  # keep the periodic sweep running
 
     def _check_memory_pressure(self):
+        if self._window_released:
+            return False
         memory = system_memory_mb()
         if memory is not None and is_memory_low(*memory):
             self._relieve_memory_pressure()
@@ -5998,14 +6022,19 @@ class ArrowBrowserWindow(Gtk.Window):
             self.create_new_tab(pending_open[0])
 
     MAX_AUTO_RELOAD_CRASHES = 3
+    # Crashes this close together count as one run. A finished load must not reset the count: a page whose
+    # renderer crashes a few seconds after loading would otherwise be reloaded forever.
+    CRASH_COUNT_WINDOW_SECONDS = 300
 
     def on_web_process_terminated(self, webview, reason):
         if reason == WebKit2.WebProcessTerminationReason.TERMINATED_BY_API:
             self._renderer_ended_by_us(webview)
             return  # we asked for it (tab put to sleep): not a crash
         key = id(webview)
-        count = self._crash_counts.get(key, 0) + 1
-        self._crash_counts[key] = count
+        now = time.monotonic()
+        count, last = self._crash_counts.get(key, (0, 0.0))
+        count = count + 1 if now - last < self.CRASH_COUNT_WINDOW_SECONDS else 1
+        self._crash_counts[key] = (count, now)
         print(f"Web process terminated (reason={reason}), crash #{count} for this tab")
         uri = webview.get_uri() or self.homepage
         safe_uri = html_module.escape(uri, quote=True)
@@ -6124,6 +6153,7 @@ class ArrowBrowserWindow(Gtk.Window):
         key = id(webview)
         count = self._load_failure_counts.get(key, 0) + 1
         self._load_failure_counts[key] = count
+        webview._arrow_load_failed = True
         print(f"Load failed for {failing_uri} (attempt {count}): {error.message}")
 
         # We upgraded this http:// address to https:// and the site didn't answer:
@@ -6140,7 +6170,15 @@ class ArrowBrowserWindow(Gtk.Window):
             # are transient and succeed on a plain retry, so retry once
             # silently before showing the user an error page.
             self.statusbar.push(self.context_id, f"⚠️ Load failed, retrying... ({error.message})")
-            GLib.timeout_add(self.LOAD_RETRY_DELAY_MS, lambda: (webview.load_uri(failing_uri), False)[1])
+            gen = getattr(webview, "_arrow_load_gen", 0)
+
+            def retry():
+                # Not if the user has gone somewhere else meanwhile, or closed the tab.
+                if (getattr(webview, "_arrow_load_gen", 0) == gen
+                        and any(getattr(t, "_arrow_webview", None) is webview for t in self._tab_boxes())):
+                    webview.load_uri(failing_uri)
+                return False
+            GLib.timeout_add(self.LOAD_RETRY_DELAY_MS, retry)
             return True
 
         self._load_failure_counts.pop(key, None)
@@ -6297,11 +6335,16 @@ class ArrowBrowserWindow(Gtk.Window):
         elif event.direction == Gdk.ScrollDirection.DOWN:
             self.adjust_zoom(-0.1)
         elif event.direction == Gdk.ScrollDirection.SMOOTH:
-            _, delta_y = event.get_scroll_deltas()
-            if delta_y < 0:
-                self.adjust_zoom(0.1)
-            elif delta_y > 0:
-                self.adjust_zoom(-0.1)
+            # A mouse wheel notch is a delta of 1; a touchpad sends many small ones. Zoom one step (10%)
+            # per whole unit, or a two-finger swipe jumps straight to 300%.
+            _, _, delta_y = event.get_scroll_deltas()  # (ok, delta_x, delta_y)
+            if delta_y * self._zoom_scroll_accum < 0:
+                self._zoom_scroll_accum = 0.0  # changed direction
+            self._zoom_scroll_accum += delta_y
+            steps = int(self._zoom_scroll_accum)
+            if steps:
+                self._zoom_scroll_accum -= steps
+                self.adjust_zoom(-0.1 * steps)
         return True  # consume the event: don't also scroll/pinch-zoom the page
 
     FIND_OPTIONS = WebKit2.FindOptions.CASE_INSENSITIVE | WebKit2.FindOptions.WRAP_AROUND
@@ -7199,8 +7242,9 @@ class ArrowBrowserWindow(Gtk.Window):
 
     def on_url_entry_changed(self, entry):
         # Private windows never resolve half-typed text: it would leak
-        # keystrokes to the DNS resolver for pages never visited.
-        if self.is_private:
+        # keystrokes to the DNS resolver for pages never visited. Only what
+        # the user types: the browser sets this text itself on every load.
+        if self.is_private or not entry.has_focus():
             return
         if self._dns_typing_source is not None:
             GLib.source_remove(self._dns_typing_source)
@@ -7490,6 +7534,9 @@ class ArrowBrowserWindow(Gtk.Window):
             webview._arrow_pending_fill = None
             # Until the new page commits, get_tls_info() still describes the previous one.
             webview._arrow_committed = False
+            webview._arrow_load_failed = False
+            # Counts navigations, so a retry scheduled for an earlier load knows the user has moved on.
+            webview._arrow_load_gen = getattr(webview, "_arrow_load_gen", 0) + 1
             webview._arrow_mixed_content = False
         elif load_event == WebKit2.LoadEvent.COMMITTED:
             webview._arrow_committed = True
@@ -7504,17 +7551,19 @@ class ArrowBrowserWindow(Gtk.Window):
         if load_event == WebKit2.LoadEvent.STARTED:
             self.statusbar.push(self.context_id, "Loading webpage...")
         elif load_event == WebKit2.LoadEvent.FINISHED:
-            self._crash_counts.pop(id(webview), None)
             uri = webview.get_uri() or ""
             # WebKit fires load-changed(FINISHED) even for a load that just
             # failed (load-failed fires first) — only clear the retry counter
             # on a genuine success, or on_load_failed's retry-once logic would
             # get silently reset every time and retry forever instead of
             # ever reaching the "show a friendly error page" threshold.
-            # A failed load never commits. Its URI can't tell: it goes back to
-            # the previous page (e.g. google.com/url whose script redirected to
-            # an unreachable site), not to empty.
-            if uri and getattr(webview, "_arrow_committed", False):
+            # A failed load usually never commits. Its URI can't tell: it goes
+            # back to the previous page (e.g. google.com/url whose script
+            # redirected to an unreachable site), not to empty. One that fails
+            # after committing (the connection drops mid-page) is flagged by
+            # on_load_failed, or it would be retried every 600 ms forever.
+            if (uri and getattr(webview, "_arrow_committed", False)
+                    and not getattr(webview, "_arrow_load_failed", False)):
                 self._load_failure_counts.pop(id(webview), None)
 
             active_wv = self.get_active_webview()
@@ -8408,8 +8457,8 @@ class ArrowBrowserWindow(Gtk.Window):
                    self.on_webrtc_toggled),
             self._settings_row("📡", "Other connections",
                                "Besides the sites you visit and the block lists, Arrow only checks GitHub for "
-                               "updates at startup, and connects to a link's site when you point at it so it opens "
-                               "faster (not in private windows)."),
+                               "updates at startup. To open pages faster, it also looks up the address you type or "
+                               "the link you point at, and connects to that site early (not in private windows)."),
         )
 
         self._settings_section(
