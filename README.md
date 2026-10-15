@@ -210,7 +210,7 @@ No telemetry, analytics or accounts. Apart from the sites you visit, Arrow conne
 
 Your data stays in `~/.config/arrow-browser` and `~/.cache/arrow-browser`, and passwords in your keyring. Private windows save nothing.
 
-Found a security problem? Open a [GitHub issue](https://github.com/Sangam1112/Arrow-Browser/issues), or contact the maintainer privately if it's sensitive.
+Found a security problem? Please [report it privately](https://github.com/Sangam1112/Arrow-Browser/security/advisories/new) rather than in a public issue; see [SECURITY.md](SECURITY.md).
 
 ---
 
