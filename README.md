@@ -199,7 +199,7 @@ Developer tools (`F12`) are off by default: set `"dev_tools_enabled": true` in `
 
 ## 🔒 Privacy
 
-**Arrow collects no personal data.** There are no Arrow servers, accounts, telemetry or analytics, so nothing about you or your browsing ever reaches the developer. That's why there's no privacy policy to accept and nothing to request or delete under laws like the GDPR or India's DPDP Act.
+**Arrow collects no personal data.** There are no Arrow servers, accounts, telemetry or analytics, so nothing about you or your browsing ever reaches the developer.
 
 ### Your data stays on your computer
 
@@ -220,7 +220,13 @@ Besides the sites you visit, Arrow makes only these connections. Each server see
 | Ad and tracker block lists | `easylist.to` | About once a week | Yes: Settings → Privacy & Security → *Keep the block lists up to date* |
 | Cookie-banner list | `secure.fanboy.co.nz` | About once a week | Yes, same switch |
 | Link-cleaning rules | `rules2.clearurls.xyz` (backup: `gitlab.com`) | About once a week | Yes, same switch |
-| Faster link opening (connects only; the page isn't loaded) | The site of a link you point at | While browsing | Only in private windows |
+| Faster page opening (looks up and connects only; the page isn't loaded) | The address you type, or the site of a link you point at | While browsing | Only in private windows |
+
+### Privacy laws
+
+Laws such as India's **Digital Personal Data Protection Act 2023**, the EU's **GDPR** and California's **CCPA/CPRA** set rules for organisations that collect people's personal data. Arrow collects none, so there is no privacy policy to accept and nothing to request or delete.
+
+No law certifies a browser as "compliant", so Arrow doesn't claim to be. What you can check for yourself: everything it stores stays on your computer, and the tables above list every connection it makes on its own.
 
 Found a security problem? Please [report it privately](https://github.com/Sangam1112/Arrow-Browser/security/advisories/new) rather than in a public issue; see [SECURITY.md](SECURITY.md).
 
