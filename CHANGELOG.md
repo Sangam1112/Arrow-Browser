@@ -4,6 +4,24 @@ All notable changes to Arrow Browser. Versions follow `MAJOR.MINOR.PATCH`.
 Releases are signed; the in-app updater only installs a release whose signature verifies.
 Notes from before 1.0.0 (Bharat Browser, and Arrow up to 1.6.9 in the old repository) are in [docs/HISTORY.md](docs/HISTORY.md).
 
+## [1.0.2] - 2026-10-16
+
+### Added
+- **Warnings for fake bank and payment sites.** A page whose address copies SBI, HDFC, ICICI, Axis, Kotak, Paytm, PhonePe, IRCTC, Aadhaar, Income Tax, EPFO and other official sites (`sbi-kyc-update.in`, `hdfcbank.co`, `icic1bank.com`, `onlinesbi.sbi.verify.top`) is stopped before it opens, even after a short-link redirect. The warning offers the real site, or to open it anyway. Addresses that mix Latin letters with look-alike letters from other alphabets are flagged too. All of it is checked on your computer; no address is sent anywhere.
+- **A warning when a page copies a command.** Fake "I'm not a robot" pages copy a command and ask you to paste it into a Terminal or the Run box. When a page puts a command that downloads and runs a program on your clipboard, Arrow shows it in full and offers to remove it. Text you copy yourself with Ctrl+C or Copy isn't flagged, unless the page swapped it for something else.
+- **Skip sponsors in YouTube videos (SponsorBlock), off by default.** Turn it on in Settings → Privacy & Security to jump over paid promotions, self-promotion and subscribe reminders that [SponsorBlock](https://sponsor.ajay.app)'s users have marked. Arrow sends only 4 characters of a scrambled video ID, which match dozens of videos, so SponsorBlock can't tell which one you watch. It costs about 2 MB per YouTube tab and no measurable CPU.
+
+### Changed
+- **Settings → Privacy & Security is regrouped** into Your data, Blocking, Scam warnings, Block lists, Connections, Passwords and Sites, and starts with what matters most: Arrow collects no personal data.
+- **Arrow's profile folders are now private to your user account.** Other accounts on the same computer can no longer read your cookies or cache.
+- **The address bar only looks up a site early while you're typing in it**, not when another part of Arrow changes its text.
+
+### Fixed
+- **Ctrl+scroll on a touchpad didn't zoom.** Every smooth-scroll zoom raised an error; it now zooms one 10% step at a time.
+- **A page that kept crashing or failing to load could be reloaded forever.** Crashes within 5 minutes now count together even when the page finishes loading in between, and a page whose connection drops partway no longer retries every 600 ms without end.
+- **A retry could load an old page after you'd moved on**, or into a tab you had already closed.
+- **Timers kept running after a window closed**, checking tabs that no longer existed.
+
 ## [1.0.1] - 2026-10-15
 
 ### Fixed

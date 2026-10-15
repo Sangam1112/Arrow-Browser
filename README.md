@@ -129,7 +129,7 @@ Get the package from the [**Releases page**](https://github.com/Sangam1112/Arrow
 <tr valign="top"><td>
 
 ```bash
-VERSION=1.0.1
+VERSION=1.0.2
 wget https://github.com/Sangam1112/Arrow-Browser/releases/download/v$VERSION/arrow-browser_${VERSION}-1_all.deb
 sudo apt install ./arrow-browser_${VERSION}-1_all.deb
 ```
@@ -137,7 +137,7 @@ sudo apt install ./arrow-browser_${VERSION}-1_all.deb
 </td><td>
 
 ```bash
-VERSION=1.0.1
+VERSION=1.0.2
 wget https://github.com/Sangam1112/Arrow-Browser/releases/download/v$VERSION/arrow-browser-${VERSION}-1.noarch.rpm
 sudo dnf install ./arrow-browser-${VERSION}-1.noarch.rpm
 ```
@@ -162,7 +162,7 @@ This installs to `~/.local`; add `--system` to install for all users. If `arrow-
 <summary><b>Fedora without git</b></summary>
 
 ```bash
-VERSION=1.0.1
+VERSION=1.0.2
 wget https://github.com/Sangam1112/Arrow-Browser/releases/download/v$VERSION/arrow-browser_${VERSION}_fedora.tar.gz
 mkdir -p /tmp/arrow_fedora
 tar -xzf arrow-browser_${VERSION}_fedora.tar.gz -C /tmp/arrow_fedora

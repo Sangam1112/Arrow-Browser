@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Arrow Browser v1.0.1 - GTK3 / WebKit2 Python Application
+Arrow Browser v1.0.2 - GTK3 / WebKit2 Python Application
 Modern, Ultra-Fast, Multi-Tab, and Privacy-First Web Browser engineered for Linux (Ubuntu)
 
 Copyright (C) 2026 Sangam1112
@@ -17,7 +17,7 @@ import os
 import json
 import shutil
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 # Version numbers started again at 1.0.0 when Arrow moved to its new repository. Copies from before that have no
 # RELEASE_SERIES line and count as older than any copy that has one, whatever their numbers say (old 1.6.9 < 1.0.0).
 RELEASE_SERIES = 2
