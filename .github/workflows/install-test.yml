@@ -1,6 +1,7 @@
 # Install a published release on fresh systems and start it once (tools/smoke-test.py), so a package that's
 # missing a dependency or breaks on another distribution shows up before users find it.
 # Runs for every published release, or by hand: Actions → Install test → Run workflow (empty = latest release).
+# With "source" ticked it builds unsigned packages from the chosen commit instead, to try a fix before releasing.
 name: Install test
 
 on:
@@ -11,6 +12,10 @@ on:
       version:
         description: "Release to test, e.g. 1.0.0 (empty: the latest release)"
         required: false
+      source:
+        description: "Build the packages from this commit instead of downloading a release"
+        type: boolean
+        default: false
 
 jobs:
   install:
@@ -39,14 +44,23 @@ jobs:
         run: |
           if [ "${{ matrix.kind }}" = deb ]; then
             apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates xvfb xauth dbus
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates xvfb xauth dbus \
+              python3 binutils xz-utils
           else
-            dnf install -y curl xorg-x11-server-Xvfb xauth dbus-daemon
+            dnf install -y curl xorg-x11-server-Xvfb xauth dbus-daemon python3 rpm-build
           fi
 
       - uses: actions/checkout@v4
 
+      - name: Build the packages from this commit
+        if: ${{ inputs.source }}
+        run: |
+          if [ "${{ matrix.kind }}" = deb ]; then OUTPUT_DIR="$PWD" bash build-deb.sh; F="$(ls arrow-browser_*-1_all.deb)"
+          else bash build-rpm.sh; F="$(ls arrow-browser-*-1.noarch.rpm)"; fi
+          echo "PKG=$PWD/$F" >> "$GITHUB_ENV"
+
       - name: Download the release package
+        if: ${{ !inputs.source }}
         run: |
           V="${WANT#v}"
           if [ -z "$V" ]; then

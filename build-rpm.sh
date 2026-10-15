@@ -48,7 +48,7 @@ License:        GPL-3.0-or-later
 URL:            https://github.com/Sangam1112/Arrow-Browser
 BuildArch:      noarch
 # Fedora names the WebKit package webkit2gtk4.1; RHEL/Rocky/AlmaLinux/CentOS Stream call it webkit2gtk3.
-Requires:       python3 python3-gobject gtk3 (webkit2gtk4.1 or webkit2gtk3)
+Requires:       python3 python3-gobject gobject-introspection gtk3 (webkit2gtk4.1 or webkit2gtk3)
 Suggests:       gnome-keyring hunspell-en
 # Called Bharat Browser up to 1.5.19: installing this replaces that package.
 Provides:       bharat-browser = %{version}-%{release}
