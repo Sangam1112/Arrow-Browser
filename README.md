@@ -263,6 +263,12 @@ Known bugs are tracked in [Issues](https://github.com/Sangam1112/Arrow-Browser/i
 
 ---
 
+## 👤 Developer
+
+Arrow Browser is designed and developed by **Sangam Parab** ([@Sangam1112](https://github.com/Sangam1112)).
+
+---
+
 ## 📄 License
 
 © 2026 Sangam1112. Free software under the [GNU General Public License v3.0 or later](LICENSE).
