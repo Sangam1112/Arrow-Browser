@@ -199,19 +199,28 @@ Developer tools (`F12`) are off by default: set `"dev_tools_enabled": true` in `
 
 ## 🔒 Privacy
 
-No telemetry, analytics or accounts. Apart from the sites you visit, Arrow connects only to:
-
-| What | To | When | Turn off |
-|---|---|---|---|
-| Update check | `api.github.com`, `raw.githubusercontent.com` | At startup and when you click *Check for updates* | Always on |
-| Ad and tracker lists | `easylist.to` | About once a week | Settings → Privacy & Security → *Keep the block lists up to date* |
-| Link-cleaning rules | `rules2.clearurls.xyz` (fallback `gitlab.com`) | About once a week | Same switch |
-| Cookie-banner list | `secure.fanboy.co.nz` | About once a week | Same switch |
-| Link prefetch | links you hover over | While browsing | Always on, except in private windows |
-
 **Arrow collects no personal data.** There are no Arrow servers, accounts, telemetry or analytics, so nothing about you or your browsing ever reaches the developer. That's why there's no privacy policy to accept and nothing to request or delete under laws like the GDPR or India's DPDP Act.
 
-Your data stays in `~/.config/arrow-browser` and `~/.cache/arrow-browser`, and passwords in your keyring. Private windows save nothing.
+### Your data stays on your computer
+
+| What | Where |
+|---|---|
+| History, bookmarks, cookies, settings | `~/.config/arrow-browser` |
+| Website cache and block lists | `~/.cache/arrow-browser` |
+| Saved passwords | Your system keyring |
+| Private windows | Nothing is saved |
+
+### What Arrow connects to
+
+Besides the sites you visit, Arrow makes only these connections. Each server sees only your IP address and that the request comes from Arrow (the update check also sends Arrow's version number).
+
+| Purpose | Server | How often | Can you turn it off? |
+|---|---|---|---|
+| Check for updates | `api.github.com`, `raw.githubusercontent.com` | At startup, and when you click *Check for updates* | No |
+| Ad and tracker block lists | `easylist.to` | About once a week | Yes: Settings → Privacy & Security → *Keep the block lists up to date* |
+| Cookie-banner list | `secure.fanboy.co.nz` | About once a week | Yes, same switch |
+| Link-cleaning rules | `rules2.clearurls.xyz` (backup: `gitlab.com`) | About once a week | Yes, same switch |
+| Link prefetch | Links you hover over | While browsing | Only in private windows |
 
 Found a security problem? Please [report it privately](https://github.com/Sangam1112/Arrow-Browser/security/advisories/new) rather than in a public issue; see [SECURITY.md](SECURITY.md).
 
