@@ -12,7 +12,7 @@
 [![Installer](https://img.shields.io/badge/installer-~300%20KB-brightgreen.svg)](#-small-by-design)
 [![Updates](https://img.shields.io/badge/updates-signed%20(Ed25519)-ee6a3a.svg)](#-updates)
 
-[**Highlights**](#-highlights) · [**Screenshots**](#-screenshots) · [**Benchmarks**](#-benchmarks) · [**Limitations**](#known-limitations) · [**Install**](#-install) · [**Privacy**](#-privacy)
+[**Highlights**](#-highlights) · [**Screenshots**](#-screenshots) · [**Limitations**](#known-limitations) · [**Install**](#-install) · [**Privacy**](#-privacy)
 
 <br>
 
@@ -101,33 +101,6 @@
     <td align="center" valign="top"><b>About</b><br><img src="docs/screenshots/settings-about.png" alt="About page with version and update check" width="400"></td>
   </tr>
 </table>
-</details>
-
----
-
-## 📊 Benchmarks
-
-Arrow (1.6.0, before the version reset) against Firefox 157, Brave 1.96 and Ungoogled Chromium 150 on a low-power laptop (AMD E2-7110, 6.7 GB RAM), October 2026. **Bold** is best.
-
-| Test | Arrow | Firefox | Brave | Ungoogled Chromium |
-| :--- | :---: | :---: | :---: | :---: |
-| **Speedometer 3.1** (higher is better) | 1.57 | 1.83 | **3.27** | 2.27 |
-| **Startup time** | 2.91 s | 8.11 s | **2.32 s** | 2.65 s |
-| **Memory, one simple page** | **234 MB** | 642 MB | 385 MB | 405 MB |
-| **Memory, one heavy page** | 485 MB | 717 MB | **458 MB** | 483 MB |
-| **Memory, 6 tabs** | 688 MB | 764 MB | **498 MB** | 520 MB |
-| **Engine tests** (% of the fastest) | 66% | 61% | **85%** | 69% |
-| **Web features supported** (of 38) | 25 | 34 | **35** | **35** |
-
-Arrow is the lightest with one page open and starts almost 3× faster than Firefox. It is the slowest in heavy web apps, and its memory grows faster than Brave's or Chromium's with many tabs open.
-
-<details>
-<summary><b>How it was measured</b></summary>
-
-- Each browser ran alone from a fresh profile, with test pages served locally.
-- Arrow ran with ad blocking on and WebRTC off; the others used their defaults (Brave's ad blocker on).
-- Speedometer is the average of 10 iterations, repeated in a second run within 3%. Startup is the median of 5 launches. Memory is the PSS total of all the browser's processes.
-- The machine is slow, so the ranking matters more than the absolute numbers.
 </details>
 
 ---
