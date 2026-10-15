@@ -56,7 +56,7 @@ jobs:
         if: ${{ inputs.source }}
         run: |
           if [ "${{ matrix.kind }}" = deb ]; then OUTPUT_DIR="$PWD" bash build-deb.sh; F="$(ls arrow-browser_*-1_all.deb)"
-          else bash build-rpm.sh; F="$(ls arrow-browser-*-1.noarch.rpm)"; fi
+          else bash build-rpm.sh; F="$(ls arrow-browser-*.noarch.rpm)"; fi  # Fedora adds its tag: -1.fc44
           echo "PKG=$PWD/$F" >> "$GITHUB_ENV"
 
       - name: Download the release package
