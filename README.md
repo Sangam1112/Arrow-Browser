@@ -265,7 +265,7 @@ Known bugs are tracked in [Issues](https://github.com/Sangam1112/Arrow-Browser/i
 
 ## 👤 Developer
 
-Arrow Browser is designed and developed by **Sangam Parab** ([@Sangam1112](https://github.com/Sangam1112)).
+Arrow Browser is designed and developed by **Sangam Parab** · [GitHub](https://github.com/Sangam1112) · [LinkedIn](https://www.linkedin.com/in/sangamparab/)
 
 ---
 
