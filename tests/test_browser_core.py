@@ -1,0 +1,1387 @@
+#!/usr/bin/env python3
+"""Tests for the browser's pure logic (no window needed). Run: python3 -m unittest discover -s tests -v"""
+import importlib.util
+import json
+import os
+import shutil
+import sqlite3
+import tempfile
+import time
+import unittest
+import urllib.error
+import urllib.request
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+spec = importlib.util.spec_from_file_location("bb", os.path.join(ROOT, "arrow_browser.py"))
+bb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bb)
+
+
+def write_text(path, text):
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def write_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f)
+
+
+class TmpDirCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+
+class UrlHelperTests(unittest.TestCase):
+    def test_sanitize_url_strips_tracking_params(self):
+        self.assertEqual(bb.sanitize_url("https://x.com/a?utm_source=t&id=5&fbclid=z"), "https://x.com/a?id=5")
+        self.assertEqual(bb.sanitize_url("https://x.com/a?id=5"), "https://x.com/a?id=5")
+        self.assertEqual(bb.sanitize_url("https://x.com/a"), "https://x.com/a")
+
+    def test_secure_and_clean_url(self):
+        f = bb.secure_and_clean_url
+        self.assertEqual(f("http://x.com/a?utm_source=t&id=5"), ("https://x.com/a?id=5", True, True))
+        self.assertEqual(f("https://x.com/a?id=5"), ("https://x.com/a?id=5", False, False))
+        self.assertEqual(f("http://192.168.1.1/admin"), ("http://192.168.1.1/admin", False, False), "LAN stays http")
+        self.assertEqual(f("http://router/"), ("http://router/", False, False))
+        self.assertEqual(f("http://x.com/", http_allowed_hosts={"x.com"}), ("http://x.com/", False, False))
+        self.assertEqual(f("http://x.com/?gclid=1", upgrade_https=False, strip_tracking=False),
+                         ("http://x.com/?gclid=1", False, False), "both settings off")
+        self.assertEqual(f("about:blank"), ("about:blank", False, False))
+
+    def test_sanitize_url_keeps_everything_else_exactly(self):
+        f = bb.sanitize_url
+        self.assertEqual(f("https://x.com/a?utm_id=1&utm_whatever=2&q=a%20b+c&gbraid=3#top?utm_source=x"),
+                         "https://x.com/a?q=a%20b+c#top?utm_source=x", "any utm_*, encoding and #fragment kept")
+        self.assertEqual(f("https://x.com/a?UTM_SOURCE=t&TtClid=1"), "https://x.com/a")
+        self.assertEqual(f("https://x.com/a?&flag&id=5"), "https://x.com/a?&flag&id=5", "untouched if nothing to drop")
+        self.assertEqual(f("https://x.com/a?flag&srsltid=9&id=5"), "https://x.com/a?flag&id=5")
+        self.assertEqual(f("https://x.com/page?a=1#section"), "https://x.com/page?a=1#section",
+                         "the #fragment stays when there is nothing to drop")
+        self.assertEqual(f("https://app.example/?x=1#/inbox"), "https://app.example/?x=1#/inbox")
+        self.assertEqual(bb.secure_and_clean_url("https://x.com/page?a=1#section")[2], False,
+                         "and it isn't counted as a removed tracking tag")
+        self.assertEqual(f("https://mail.example/u/0/#inbox?utm_source=x"), "https://mail.example/u/0/#inbox?utm_source=x",
+                         "a ? inside the #fragment is the page's own route, not the query")
+
+    def test_startup_urls_from_args(self):
+        self.assertEqual(bb.startup_urls_from_args(["https://x.com/", "", "--flag", "javascript:alert(1)",
+                                                    "no-such-file", __file__, "http://y.org"]),
+                         ["https://x.com/", bb.GLib.filename_to_uri(os.path.abspath(__file__)), "http://y.org"])
+
+    def test_download_filename(self):
+        f = bb.download_filename
+        self.assertEqual(f("Report 2026.pdf", "https://x.com/dl?id=7"), "Report 2026.pdf")
+        self.assertEqual(f("", "https://x.com/files/My%20File.zip"), "My File.zip", "address part is decoded")
+        self.assertEqual(f("../../etc/passwd"), "_.._etc_passwd", "never a path")
+        self.assertEqual(f("", "https://x.com/"), "download")
+        self.assertEqual(f("..", ""), "download")
+        self.assertEqual(f(".profile"), "profile", "never a hidden file")
+        self.assertEqual(f("bad\nname\x07.txt"), "badname.txt", "no control characters")
+
+    def test_old_chromium_profile_data_is_removed_and_webkit_data_kept(self):
+        d = tempfile.mkdtemp()
+        try:
+            for name in ("Cookies", "Trust Tokens", "DIPS", "cookies.sqlite", "settings.json"):
+                open(os.path.join(d, name), "w").close()
+            for name in ("IndexedDB/https_x.com_0.indexeddb.leveldb", "Local Storage/leveldb", "localstorage", "storage"):
+                os.makedirs(os.path.join(d, name))
+            bb.ArrowBrowserWindow._cleanup_stale_chromium_artifacts(d)
+            self.assertEqual(sorted(os.listdir(d)), ["cookies.sqlite", "localstorage", "settings.json", "storage"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_running_under_wsl(self):
+        d = tempfile.mkdtemp()
+        try:
+            wsl, linux = os.path.join(d, "wsl"), os.path.join(d, "linux")
+            with open(wsl, "w") as f:
+                f.write("Linux version 5.15.167.4-microsoft-standard-WSL2 (root@...)")
+            with open(linux, "w") as f:
+                f.write("Linux version 7.0.0-linuxlite (gcc ...)")
+            self.assertTrue(bb.running_under_wsl({}, wsl))
+            self.assertFalse(bb.running_under_wsl({}, linux))
+            self.assertTrue(bb.running_under_wsl({"WSL_DISTRO_NAME": "Ubuntu"}, linux))
+            self.assertFalse(bb.running_under_wsl({}, os.path.join(d, "missing")))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_install_from_before_the_rename_moves_to_the_new_place(self):
+        d = tempfile.mkdtemp()
+        try:
+            legacy, new = os.path.join(d, "bharat-browser"), os.path.join(d, "arrow-browser")
+            os.makedirs(legacy)
+            here = os.path.join(legacy, "bharat_browser.py")
+            with open(here, "w") as f:
+                f.write(f'APP_VERSION = "{bb.APP_VERSION}"\n# this release\n')
+            move = lambda: bb.move_off_legacy_install(here, new, legacy)
+            self.assertIsNone(bb.move_off_legacy_install(os.path.join(d, "elsewhere.py"), new, legacy))
+            target = move()
+            self.assertEqual(target, os.path.join(new, "arrow_browser.py"))
+            self.assertEqual(open(target).read(), open(here).read(), "copied to the new place")
+            self.assertTrue(os.path.exists(here), "the old file stays: older launchers still start it")
+            with open(target, "w") as f:
+                f.write('APP_VERSION = "99.0.0"\n')  # updated since, in the new place
+            self.assertEqual(move(), target)
+            self.assertIn("99.0.0", open(target).read(), "a newer copy is never replaced by an older one")
+            with open(target, "w") as f:
+                f.write('APP_VERSION = "0.0.1"\n')
+            move()
+            self.assertIn("# this release", open(target).read(), "an older copy is replaced")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_data_from_before_the_rename_moves_once(self):
+        d = tempfile.mkdtemp()
+        try:
+            old, new = os.path.join(d, "bharat-browser"), os.path.join(d, "arrow-browser")
+            os.makedirs(old)
+            open(os.path.join(old, "settings.json"), "w").close()
+            bb.move_legacy_data([(old, new)])
+            self.assertTrue(os.path.isfile(os.path.join(new, "settings.json")))
+            self.assertEqual(os.readlink(old), new, "old name links to the new folder")
+            bb.move_legacy_data([(old, new)])  # nothing left to do
+            self.assertTrue(os.path.isfile(os.path.join(new, "settings.json")))
+            other_old, other_new = os.path.join(d, "o1"), os.path.join(d, "o2")
+            os.makedirs(other_old); os.makedirs(other_new)
+            bb.move_legacy_data([(other_old, other_new)])
+            self.assertTrue(os.path.isdir(other_old) and not os.path.islink(other_old), "never merged into existing data")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_risky_downloads(self):
+        for name in ("invoice.pdf.desktop", "setup.SH", "app.AppImage", "x.deb", "run.py"):
+            self.assertTrue(bb.is_risky_download(name), name)
+        for name in ("report.pdf", "photo.jpg", "archive.zip", "notes.txt", "desktop"):
+            self.assertFalse(bb.is_risky_download(name), name)
+
+    def test_homepage_rejects_dangerous_schemes(self):
+        for bad in ("javascript:alert(1)", "data:text/html,x", "file:///etc/passwd", ""):
+            self.assertEqual(bb.sanitize_homepage_url(bad), bb.DEFAULT_HOMEPAGE)
+        self.assertEqual(bb.sanitize_homepage_url("example.com"), "https://example.com")
+
+    def test_local_network_hosts(self):
+        for h in ("localhost", "192.168.1.1", "10.0.0.5", "printer"):
+            self.assertTrue(bb.is_local_network_host(h), h)
+        self.assertFalse(bb.is_local_network_host("example.com"))
+
+    def test_builtin_rules_cover_domains_paths_and_streaming(self):
+        rules = json.loads(bb.build_content_blocker_rules_json())
+        filters = [r["trigger"]["url-filter"] for r in rules if r["action"]["type"] == "block"]
+        self.assertTrue(any("doubleclick" in f for f in filters))
+        paths = [r for r in rules if r["action"]["type"] == "block" and "resource-type" in r["trigger"]]
+        self.assertEqual(len(paths), len(bb.BLOCKED_PATH_SEGMENTS))
+        for r in paths:
+            self.assertNotIn("document", r["trigger"]["resource-type"], "page navigations are never blocked by path")
+            self.assertIn("*youtube.com", r["trigger"]["unless-domain"])
+        kinds = [r["action"]["type"] for r in rules]
+        # manifest exemptions must come after the path rules and before the domain rules
+        self.assertLess(max(i for i, r in enumerate(rules) if "resource-type" in r["trigger"]), kinds.index("ignore-previous-rules"))
+        for r in rules:
+            self.assertNotIn("|", r["trigger"]["url-filter"], "WebKit content rules do not support alternation")
+
+    def test_probe_picks_only_a_clear_winner(self):
+        before = {10: 100, 11: 100, 12: 100}
+        self.assertEqual(bb.pick_probe_pid(before, {10: 101, 11: 125, 12: 100}), 11)
+        self.assertIsNone(bb.pick_probe_pid(before, {10: 101, 11: 102, 12: 100}), "too little CPU moved to trust")
+        self.assertIsNone(bb.pick_probe_pid(before, {10: 122, 11: 125, 12: 100}), "two processes moved about equally")
+        self.assertIsNone(bb.pick_probe_pid({}, {}), "no renderers at all")
+        self.assertIsNone(bb.pick_probe_pid({10: None}, {10: 50}), "unreadable process is skipped")
+        # a busy page in another tab (11) moves as much as the probed tab (12) unless its usual use is taken off
+        self.assertIsNone(bb.pick_probe_pid(before, {10: 100, 11: 120, 12: 120}))
+        self.assertEqual(bb.pick_probe_pid(before, {10: 100, 11: 120, 12: 120}, expected={11: 19.5}), 12)
+        # nothing used more than usual: the probed tab is the one already busy renderer...
+        self.assertEqual(bb.pick_probe_pid(before, {10: 100, 11: 120, 12: 100}, expected={11: 19.5, 12: 0}), 11)
+        # ...unless another renderer moved a little: a burst squeezed by a loaded computer
+        self.assertIsNone(bb.pick_probe_pid(before, {10: 100, 11: 120, 12: 106}, expected={11: 19.5, 12: 0}))
+        # ...but with two busy renderers it isn't guessed
+        self.assertIsNone(bb.pick_probe_pid(before, {10: 100, 11: 120, 12: 115}, expected={11: 19.5, 12: 15}))
+
+    def test_desktop_notifier_sends_and_handles_clicks(self):
+        calls = []
+
+        class FakeBus:
+            def call(self, name, path, iface, method, params, reply_type, flags, timeout, cancellable, callback):
+                calls.append((method, params.unpack()))
+                callback(self, None)
+
+            def call_finish(self, _result):
+                return bb.GLib.Variant("(u)", (42,))
+
+        notifier = bb.DesktopNotifier()
+        notifier._bus = FakeBus()
+        clicked = []
+        notifier.send("Download complete", "a<b>&c.txt", "folder-download", lambda: clicked.append(1))
+        method, (app, replaces, icon, summary, body, actions, hints, timeout) = calls[0]
+        self.assertEqual((method, app, summary, icon), ("Notify", "Arrow Browser", "Download complete", "folder-download"))
+        self.assertEqual(body, "a&lt;b&gt;&amp;c.txt", "the file name is not read as markup")
+        self.assertEqual(actions, ["default", "Open"])
+        notifier._on_signal(None, None, None, None, "ActionInvoked", bb.GLib.Variant("(us)", (7, "default")), None)
+        self.assertEqual(clicked, [], "another program's notification")
+        notifier._on_signal(None, None, None, None, "ActionInvoked", bb.GLib.Variant("(us)", (42, "default")), None)
+        self.assertEqual(clicked, [1])
+        notifier.send("Download complete", "x.txt")
+        notifier._on_signal(None, None, None, None, "NotificationClosed", bb.GLib.Variant("(uu)", (42, 2)), None)
+        self.assertEqual(notifier._clicks, {}, "closed notifications are forgotten")
+
+    def test_blocked_by_rules_mirrors_the_content_blocker(self):
+        page = "news.example.com"
+        lists = frozenset({"tracker.example"})
+        self.assertTrue(bb.blocked_by_rules("https://doubleclick.net/x.js", page), "built-in domain")
+        self.assertTrue(bb.blocked_by_rules("https://cdn.tracker.example/p.gif", page, lists), "list domain, third-party")
+        self.assertFalse(bb.blocked_by_rules("https://tracker.example/p.gif", "www.tracker.example", lists),
+                         "list domains are only blocked as third-party loads")
+        self.assertTrue(bb.blocked_by_rules("https://cdn.example.org/pagead/1.png", page), "path rule")
+        self.assertTrue(bb.blocked_by_rules("https://cdn.example.org/a/ADS/1.png", page), "rules ignore case")
+        self.assertFalse(bb.blocked_by_rules("https://cdn.example.org/roads/1.png", page))
+        self.assertFalse(bb.blocked_by_rules("https://cdn.example.org/ads/live.m3u8?t=1", page), "streaming manifest")
+        self.assertFalse(bb.blocked_by_rules("https://cdn.example.org/pixel.gif", "www.youtube.com"), "streaming site")
+        self.assertFalse(bb.blocked_by_rules("data:image/png;base64,xx", page))
+        self.assertFalse(bb.blocked_by_rules("https://cdn.example.org/broken.png", page), "an ordinary failed load")
+        urls = ["https://doubleclick.net/a.js", "https://doubleclick.net/a.js", "https://doubleclick.net/b.js",
+                "https://cdn.tracker.example/p.gif", "https://cdn.example.org/ok.png"]
+        self.assertEqual(bb.summarize_blocked(urls, page, lists),
+                         (3, [("doubleclick.net", 2), ("cdn.tracker.example", 1)]))
+
+    def test_memory_text(self):
+        self.assertEqual(bb.format_memory_mb(None), "—")
+        self.assertEqual(bb.format_memory_mb(51.4), "51 MB")
+        self.assertEqual(bb.format_memory_mb(1536), "1.5 GB")
+
+    def test_proc_readers_on_this_process(self):
+        self.assertGreater(bb._proc_pss_mb(os.getpid()), 1.0)
+        self.assertIsInstance(bb._proc_ticks(os.getpid()), int)
+        self.assertIsNone(bb._proc_ticks(2 ** 22 + 12345))
+        self.assertIsNone(bb._proc_pss_mb(2 ** 22 + 12345))
+        self.assertIsInstance(bb.web_process_pids(), list)
+
+    def test_user_agent_matches_the_engine(self):
+        # Claiming Chrome from WebKit made Cloudflare's human verification fail every time.
+        self.assertIn("AppleWebKit/605.1.15", bb.USER_AGENT)
+        self.assertIn("Safari/605.1.15", bb.USER_AGENT)
+        self.assertNotIn("Chrome/", bb.USER_AGENT)
+        self.assertIn(f"Chrome/{bb.CHROME_UA_MAJOR}.0.0.0", bb.CHROME_USER_AGENT)
+
+    def test_accessibility_bridge_guard(self):
+        self.assertTrue(bb._should_disable_at_bridge({}, screen_reader_running=False))
+        self.assertFalse(bb._should_disable_at_bridge({}, screen_reader_running=True), "a screen reader keeps it on")
+        self.assertFalse(bb._should_disable_at_bridge({"ARROW_ACCESSIBILITY": "1"}, False), "user can opt in")
+        self.assertFalse(bb._should_disable_at_bridge({"NO_AT_BRIDGE": "0"}, False), "an explicit choice is kept")
+        self.assertIsInstance(bb._screen_reader_running(), bool)
+
+    def test_fingerprint_script_skips_captcha_frames(self):
+        self.assertIn(bb.FARBLING_EXEMPT_JS, bb.FARBLING_JS)
+        self.assertNotIn("__ARROW_FARBLE_EXEMPT", bb.FARBLING_JS)
+        for domain in ("challenges.cloudflare.com", "recaptcha.net", "hcaptcha.com"):
+            self.assertIn(domain, bb.FARBLING_EXEMPT_JS)
+
+    def test_fingerprint_script_gets_its_seed(self):
+        script = bb.farbling_js(2 ** 32 + 7)
+        self.assertNotIn("__ARROW_FARBLE_SEED__", script)
+        self.assertIn("2166136261 ^ 7;", script)
+        self.assertNotEqual(bb.farbling_js(1), bb.farbling_js(2))
+
+    def test_site_host_of(self):
+        self.assertEqual(bb.site_host_of("https://WWW.Example.com:8080/x"), "www.example.com")
+        self.assertEqual(bb.site_host_of(""), "")
+        self.assertEqual(bb.site_host_of("about:blank"), "")
+
+
+class ReleaseSeriesTests(TmpDirCase):
+    def test_restarted_numbering_never_lets_an_old_copy_win(self):
+        user = os.path.join(self.tmp, "user")
+        os.makedirs(user)
+        here = os.path.join(user, "arrow_browser.py")
+        write_text(here, "")
+        system = os.path.join(self.tmp, "system.py")
+        self.assertEqual(bb.APP_VERSION.split(".")[0], "1")
+        # an old package (from before 1.0.0 restarted the numbers) is older, though 1.6.9 > 1.0.x
+        write_text(system, 'APP_VERSION = "1.6.9"\n')
+        self.assertFalse(bb.system_copy_is_newer(here, user, system))
+        write_text(system, f'APP_VERSION = "{bb.APP_VERSION}"\nRELEASE_SERIES = {bb.RELEASE_SERIES}\n')
+        self.assertFalse(bb.system_copy_is_newer(here, user, system), "the same version isn't newer")
+        write_text(system, f'APP_VERSION = "99.0.0"\nRELEASE_SERIES = {bb.RELEASE_SERIES}\n')
+        self.assertTrue(bb.system_copy_is_newer(here, user, system))
+        # only the per-user copy ever steps aside
+        self.assertFalse(bb.system_copy_is_newer(os.path.join(self.tmp, "arrow_browser.py"), user, system))
+
+
+class OfflineAndPagesTests(unittest.TestCase):
+    def test_bundled_font_is_registered_and_given_to_arrows_pages(self):
+        bb.gi.require_version("PangoCairo", "1.0")
+        from gi.repository import PangoCairo
+        self.assertEqual(bb.UI_FONT_FILE, os.path.join(ROOT, "assets", "fonts", "Lexend.ttf"))
+        families = {f.get_name() for f in PangoCairo.FontMap.get_default().list_families()}
+        self.assertIn("Lexend", families)
+        page = bb.with_ui_font(f"<html><head><title>x</title></head><body style='font-family:{bb.UI_FONT_STACK}'></body></html>")
+        self.assertTrue(page.startswith('<html><head><style>@font-face{font-family:"Lexend"'))
+        self.assertEqual(page.count("@font-face"), 1)
+        # a redirect page doesn't use the font, so it doesn't carry 230 KB of it
+        redirect = "<html><head><meta http-equiv='refresh' content='0;url=https://example.com/'></head></html>"
+        self.assertEqual(bb.with_ui_font(redirect), redirect)
+
+    def test_offline_detection_is_conservative(self):
+        dns_failure = "Error resolving 'x.com': Temporary failure in name resolution"
+        real = bb._internet_confirmed
+        self.addCleanup(setattr, bb, "_internet_confirmed", real)
+        bb._internet_confirmed = lambda monitor: False
+        self.assertTrue(bb.looks_offline(dns_failure))
+        self.assertTrue(bb.looks_offline("Network is unreachable"))
+        # per-site problems must not be blamed on the user's internet
+        if bb.Gio.NetworkMonitor.get_default().get_network_available():
+            self.assertFalse(bb.looks_offline("Connection refused"))
+            self.assertFalse(bb.looks_offline("Error resolving 'typo.invalid': Name or service not known"))
+            # with the internet known to work, a failed name lookup is a DNS block of that one site
+            bb._internet_confirmed = lambda monitor: True
+            self.assertFalse(bb.looks_offline(dns_failure))
+            self.assertTrue(bb.looks_offline("Network is unreachable"))
+
+    def test_only_networkmanager_can_confirm_the_internet(self):
+        class Monitor:
+            def __init__(self, connectivity):
+                self.connectivity = connectivity
+
+            def get_connectivity(self):
+                return self.connectivity
+
+        real = bb.GObject.type_name
+        self.addCleanup(setattr, bb.GObject, "type_name", real)
+        for name, connectivity, expected in (("GNetworkMonitorNM", bb.Gio.NetworkConnectivity.FULL, True),
+                                             ("GNetworkMonitorNM", bb.Gio.NetworkConnectivity.LIMITED, False),
+                                             ("GNetworkMonitorBase", bb.Gio.NetworkConnectivity.FULL, False)):
+            bb.GObject.type_name = lambda monitor, name=name: name
+            self.assertEqual(bb._internet_confirmed(Monitor(connectivity)), expected, (name, connectivity))
+
+    def test_error_page_escapes_hostile_input(self):
+        evil = 'https://x.com/"><script>alert(1)</script>'
+        for offline in (True, False):
+            html = bb.build_error_page('ev"il<h>', evil, "err <b>&@HEADING@", offline)
+            self.assertNotIn("<script>alert", html)
+            self.assertNotIn('ev"il<h>', html)
+            self.assertIn("&lt;b&gt;&amp;@HEADING@", html, "error text must not be re-substituted")
+
+    def test_notice_page(self):
+        html = bb.build_notice_page("⚠️", "Heading", "<p>body</p>", '<a class="btn" href="#">Go</a>', tech="a<b")
+        self.assertIn("Heading", html)
+        self.assertIn("a&lt;b", html)
+        self.assertNotIn("@ACTIONS@", html)
+
+
+class ImportTests(TmpDirCase):
+    def test_chromium_bookmarks_and_history(self):
+        prof = os.path.join(self.tmp, "Default")
+        os.makedirs(prof)
+        write_json(os.path.join(prof, "Bookmarks"), {"roots": {"bookmark_bar": {"type": "folder", "children": [
+            {"type": "url", "name": "Example", "url": "https://example.com/", "date_added": "13350000000000000"},
+            {"type": "folder", "children": [{"type": "url", "name": "Deep", "url": "http://deep.test/"}]},
+            {"type": "url", "name": "JS", "url": "javascript:alert(1)"}]}}})
+        conn = sqlite3.connect(os.path.join(prof, "History"))
+        conn.execute("CREATE TABLE urls (url TEXT, title TEXT, visit_count INT, last_visit_time INT)")
+        conn.execute("INSERT INTO urls VALUES ('https://a.test/', 'A', 3, 13350000000000000)")
+        conn.execute("INSERT INTO urls VALUES ('chrome://settings', 'S', 1, 13350000000000001)")
+        conn.commit(); conn.close()
+        marks = bb.read_chromium_bookmarks(prof)
+        self.assertEqual({m["url"] for m in marks}, {"https://example.com/", "http://deep.test/"})
+        self.assertTrue(1.6e9 < marks[0]["added"] < 1.8e9, "1601-epoch conversion")
+        hist = bb.read_chromium_history(prof)
+        self.assertEqual([h["url"] for h in hist], ["https://a.test/"])
+        self.assertEqual(hist[0]["visits"], 3)
+
+    def test_firefox_bookmarks_and_history(self):
+        prof = os.path.join(self.tmp, "x.default")
+        os.makedirs(prof)
+        conn = sqlite3.connect(os.path.join(prof, "places.sqlite"))
+        conn.execute("CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT, title TEXT, visit_count INT, last_visit_date INT)")
+        conn.execute("CREATE TABLE moz_bookmarks (id INTEGER PRIMARY KEY, type INT, fk INT, title TEXT, dateAdded INT)")
+        conn.execute("INSERT INTO moz_places VALUES (1,'https://ff.test/','FF',2,1700000000000000)")
+        conn.execute("INSERT INTO moz_places VALUES (2,'place:sort=1','Q',0,NULL)")
+        conn.execute("INSERT INTO moz_bookmarks VALUES (1,1,1,'Bm',1700000000000000)")
+        conn.execute("INSERT INTO moz_bookmarks VALUES (2,2,NULL,'folder',1)")
+        conn.commit(); conn.close()
+        self.assertEqual([b["url"] for b in bb.read_firefox_bookmarks(prof)], ["https://ff.test/"])
+        self.assertEqual(bb.read_firefox_bookmarks(prof)[0]["added"], 1700000000)
+        self.assertEqual([h["url"] for h in bb.read_firefox_history(prof)], ["https://ff.test/"])
+
+    def test_find_profiles_and_read_profile_survives_bad_files(self):
+        base = os.path.join(self.tmp, ".config", "google-chrome", "Default")
+        os.makedirs(base)
+        write_text(os.path.join(base, "Bookmarks"), "{not json")
+        profiles = bb.find_importable_profiles(home=self.tmp)
+        self.assertEqual([(p["browser"], p["profile"], p["kind"]) for p in profiles], [("Google Chrome", "Default", "chromium")])
+        marks, hist, errors = bb.read_profile(profiles[0])
+        self.assertEqual((marks, hist), ([], []))
+        self.assertEqual(len(errors), 2, "both parts report their failure instead of crashing")
+
+    def test_netscape_bookmarks_html(self):
+        html = """<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><p>
+        <DT><H3>Folder</H3><DL><p>
+        <DT><A HREF="https://a.test/?x=1&amp;y=2" ADD_DATE="1700000000" ICON="data:image/png;base64,AAAA">A &amp; B</A>
+        <DT><a add_date="1600000000" href="http://b.test/">  <b>Bee</b> </a>
+        <DT><A HREF="javascript:alert(1)">bad</A><DT><A HREF="">empty</A><DT><A>nohref</A></DL><p></DL><p>"""
+        marks = bb.parse_netscape_bookmarks(html)
+        self.assertEqual([(m["url"], m["title"], m["added"]) for m in marks],
+                         [("https://a.test/?x=1&y=2", "A & B", 1700000000), ("http://b.test/", "Bee", 1600000000)])
+
+    def test_merge_dedupes_and_respects_limits(self):
+        existing = [{"url": "https://a/", "title": "A", "added": 1}]
+        merged, added = bb.merge_bookmarks(existing, [{"url": "https://a/", "title": "dup", "added": 2},
+                                                     {"url": "https://b/", "title": "B", "added": 3}])
+        self.assertEqual((len(merged), added, merged[0]["title"]), (2, 1, "A"))
+        _, added = bb.merge_bookmarks(existing, [{"url": f"https://n{i}/", "title": "", "added": 0} for i in range(10)], limit=3)
+        self.assertEqual(added, 2)
+        hist_old = [{"url": "https://a/", "last_visited": 100}]
+        hist_new = [{"url": "https://a/", "last_visited": 999}, {"url": "https://b/", "last_visited": 500}]
+        merged, added = bb.merge_history(hist_old, hist_new)
+        self.assertEqual([e["url"] for e in merged], ["https://b/", "https://a/"])
+        self.assertEqual(merged[1]["last_visited"], 100, "existing entry wins")
+        self.assertEqual(added, 1)
+
+
+    def test_home_page_from_another_browser(self):
+        ff = os.path.join(self.tmp, "ff")
+        os.makedirs(ff)
+        write_text(os.path.join(ff, "prefs.js"),
+                   'user_pref("browser.startup.homepage", "https://news.test/|https://second.test/");\n')
+        self.assertEqual(bb.read_profile_homepage({"kind": "firefox", "path": ff}), "https://news.test/")
+        write_text(os.path.join(ff, "prefs.js"), 'user_pref("browser.startup.homepage", "about:home");\n')
+        self.assertIsNone(bb.read_profile_homepage({"kind": "firefox", "path": ff}))
+
+        ch = os.path.join(self.tmp, "Default")
+        os.makedirs(ch)
+        chromium = {"kind": "chromium", "path": ch}
+        self.assertIsNone(bb.read_profile_homepage(chromium), "no Preferences file")
+        write_json(os.path.join(ch, "Preferences"), {"homepage": "https://home.test/", "homepage_is_newtabpage": True})
+        self.assertIsNone(bb.read_profile_homepage(chromium), "set, but the new-tab page is what opens")
+        write_json(os.path.join(ch, "Preferences"), {"homepage": "https://home.test/", "homepage_is_newtabpage": False})
+        self.assertEqual(bb.read_profile_homepage(chromium), "https://home.test/")
+        write_json(os.path.join(ch, "Preferences"),
+                   {"session": {"restore_on_startup": 4, "startup_urls": ["https://start.test/"]}})
+        self.assertEqual(bb.read_profile_homepage(chromium), "https://start.test/")
+        write_text(os.path.join(ch, "Preferences"), "[1, 2]")
+        self.assertIsNone(bb.read_profile_homepage(chromium), "odd JSON doesn't crash")
+
+    def test_most_recently_used_profile_first(self):
+        old, new = os.path.join(self.tmp, "old"), os.path.join(self.tmp, "new")
+        for d, name in ((old, "places.sqlite"), (new, "History")):
+            os.makedirs(d)
+            write_text(os.path.join(d, name), "")
+        os.utime(os.path.join(old, "places.sqlite"), (1000, 1000))
+        profiles = [{"kind": "firefox", "path": old}, {"kind": "chromium", "path": new},
+                    {"kind": "chromium", "path": os.path.join(self.tmp, "gone")}]
+        self.assertEqual([p["path"] for p in sorted(profiles, key=bb.profile_last_used, reverse=True)],
+                         [new, old, os.path.join(self.tmp, "gone")])
+
+    def test_passwords_csv_from_chrome_firefox_and_safari(self):
+        chrome = ("\ufeffname,url,username,password,note\n"
+                  "a.test,https://a.test/login?x=1,alice,s3cret,\n"
+                  "app,android://hash@com.app/,bob,pw,\n"
+                  "nopw,https://b.test/,carol,,\n"
+                  'quoted,https://Q.test/,"d,ave","p""w,1",\n'
+                  "a.test,https://a.test/other,alice,newer,\n")
+        self.assertEqual(sorted((l["host"], l["username"], l["password"]) for l in bb.parse_password_csv(chrome)),
+                         [("a.test", "alice", "newer"), ("q.test", "d,ave", 'p"w,1')])
+        firefox = ('"url","username","password","httpRealm","formActionOrigin","guid","timeCreated"\n'
+                   '"https://ff.test","","onlypw",,"https://ff.test","{1}","1"\n')
+        self.assertEqual(bb.parse_password_csv(firefox), [{"host": "ff.test", "username": "", "password": "onlypw"}])
+        safari = "Title,URL,Username,Password,Notes,OTPAuth\nS,https://s.test/,sam,pw,,\n"
+        self.assertEqual([l["host"] for l in bb.parse_password_csv(safari)], ["s.test"])
+        with self.assertRaises(ValueError):
+            bb.parse_password_csv("title,url\nA,https://a.test/\n")
+        with self.assertRaises(ValueError):
+            bb.parse_password_csv("")
+
+
+class WelcomeHelperTests(TmpDirCase):
+    def test_homepage_for_engine(self):
+        self.assertEqual(bb.homepage_for_engine(bb.SEARCH_ENGINES["DuckDuckGo"]), bb.DEFAULT_HOMEPAGE)
+        self.assertEqual(bb.homepage_for_engine(bb.SEARCH_ENGINES["Brave Search"]), "https://search.brave.com")
+        self.assertEqual(bb.homepage_for_engine("javascript:{query}"), bb.DEFAULT_HOMEPAGE)
+        for name in bb.SEARCH_ENGINES:
+            self.assertIn(name, bb.SEARCH_ENGINE_NOTES, "every built-in engine has a note in the welcome wizard")
+
+    def test_installed_desktop_file(self):
+        user, system = os.path.join(self.tmp, "user"), os.path.join(self.tmp, "system")
+        self.assertIsNone(bb.installed_desktop_file([user, system]))
+        os.makedirs(os.path.join(system, "applications"))
+        write_text(os.path.join(system, "applications", "bharat-browser.desktop"), "")
+        self.assertEqual(bb.installed_desktop_file([user, system]), "bharat-browser.desktop")
+        write_text(os.path.join(system, "applications", "arrow-browser.desktop"), "")
+        self.assertEqual(bb.installed_desktop_file([user, system]), "arrow-browser.desktop")
+
+class ClearOnExitCrashTests(TmpDirCase):
+    def setUp(self):
+        super().setUp()
+        config, cache = os.path.join(self.tmp, "config"), os.path.join(self.tmp, "cache")
+        for name, value in (("CLEAR_ON_EXIT_MARKER", os.path.join(self.tmp, "clear-on-exit.pending")),
+                            ("COOKIE_DB_FILE", os.path.join(config, "cookies.sqlite")),
+                            ("HISTORY_FILE", os.path.join(config, "history.json")),
+                            ("CONFIG_DIR", config), ("CACHE_DIR", cache)):
+            self.addCleanup(setattr, bb, name, getattr(bb, name))
+            setattr(bb, name, value)
+        for folder in (os.path.join(config, "localstorage"), os.path.join(config, "storage", "x"),
+                       os.path.join(cache, "WebKitCache"), os.path.join(cache, "content-filters")):
+            os.makedirs(folder)
+        for path in (bb.COOKIE_DB_FILE, bb.COOKIE_DB_FILE + "-journal", bb.HISTORY_FILE,
+                     os.path.join(config, "localstorage", "site.sqlite3"), os.path.join(config, "settings.json"),
+                     os.path.join(config, "bookmarks.json"), os.path.join(cache, "tracker_list.json")):
+            write_text(path, "x")
+        self.config, self.cache = config, cache
+
+    def test_crashed_session_loses_its_cookies_history_and_site_data(self):
+        dead = 2 ** 22 + 12345  # above pid_max's usual default, so never running
+        write_text(bb.CLEAR_ON_EXIT_MARKER, str(dead))
+        self.assertTrue(bb.clear_data_left_by_crash())
+        for gone in (bb.COOKIE_DB_FILE, bb.COOKIE_DB_FILE + "-journal", bb.CLEAR_ON_EXIT_MARKER, bb.HISTORY_FILE,
+                     os.path.join(self.config, "localstorage"), os.path.join(self.config, "storage"),
+                     os.path.join(self.cache, "WebKitCache")):
+            self.assertFalse(os.path.exists(gone), gone)
+        for kept in ("settings.json", "bookmarks.json"):
+            self.assertTrue(os.path.exists(os.path.join(self.config, kept)), kept)
+        for kept in ("content-filters", "tracker_list.json"):
+            self.assertTrue(os.path.exists(os.path.join(self.cache, kept)), kept)
+
+    def test_running_browser_keeps_its_data(self):
+        write_text(bb.CLEAR_ON_EXIT_MARKER, str(os.getppid()))
+        self.assertFalse(bb.clear_data_left_by_crash())
+        self.assertTrue(os.path.exists(bb.COOKIE_DB_FILE))
+        self.assertTrue(os.path.exists(bb.HISTORY_FILE))
+
+    def test_clean_exit_keeps_cookies(self):
+        self.assertFalse(bb.clear_data_left_by_crash())
+        self.assertTrue(os.path.exists(bb.COOKIE_DB_FILE))
+
+    def test_marker_round_trip(self):
+        bb.mark_clear_on_exit_pending()
+        with open(bb.CLEAR_ON_EXIT_MARKER) as f:
+            self.assertEqual(f.read(), str(os.getpid()))
+        bb.unmark_clear_on_exit_pending()
+        self.assertFalse(os.path.exists(bb.CLEAR_ON_EXIT_MARKER))
+        bb.unmark_clear_on_exit_pending()  # already gone: no error
+
+
+class SiteSettingsTests(TmpDirCase):
+    def test_set_get_and_cleanup(self):
+        s = {}
+        bb.set_site_value(s, "a.com", "permissions", "allow", sub="media")
+        bb.set_site_value(s, "a.com", "zoom", 1.5)
+        self.assertEqual(bb.get_site_permission(s, "a.com", "media"), "allow")
+        self.assertIsNone(bb.get_site_permission(s, "a.com", "location"))
+        self.assertIsNone(bb.get_site_permission(s, "b.com", "media"))
+        bb.set_site_value(s, "a.com", "permissions", None, sub="media")
+        bb.set_site_value(s, "a.com", "zoom", None)
+        self.assertEqual(s, {}, "empty entries are removed")
+        bb.set_site_value(s, "", "zoom", 2)
+        self.assertEqual(s, {}, "no host, no entry")
+
+    def test_roundtrip_and_corrupt_file(self):
+        old = bb.SITE_SETTINGS_FILE
+        bb.SITE_SETTINGS_FILE = os.path.join(self.tmp, "site.json")
+        self.addCleanup(setattr, bb, "SITE_SETTINGS_FILE", old)
+        self.assertEqual(bb.load_site_settings(), {})
+        bb.save_site_settings({"a.com": {"zoom": 1.2}})
+        self.assertEqual(bb.load_site_settings(), {"a.com": {"zoom": 1.2}})
+        self.assertEqual(oct(os.stat(bb.SITE_SETTINGS_FILE).st_mode & 0o777), "0o600")
+        write_text(bb.SITE_SETTINGS_FILE, "garbage")
+        self.assertEqual(bb.load_site_settings(), {})
+
+
+class TrackerListTests(unittest.TestCase):
+    LIST = "\n".join([
+        "[Adblock Plus 2.0]", "! comment", "||tracker.example^", "||ads.example.net^$third-party",
+        "||script.example^$script,third-party", "||only-on-site.example^$domain=news.com", "||neg.example^$~third-party",
+        "@@||allowed.example^", "||path.example/ads^", "||wild*.example^", "example.com##.banner",
+        "||google.com^", "||x.google.com^", "||recaptcha.net^", "||popup.example^$popup", "||UPPER.Example^",
+    ])
+
+    def test_parse_popup_domains(self):
+        text = self.LIST + "\n" + "\n".join([
+            "||pop2.example^$popup,third-party", "||pop3.example^$popup,domain=site.com", "||doc.example^$document,popup",
+            "||pop.google.com^$popup", "||pop4.example^$script,popup"])
+        self.assertEqual(bb.parse_abp_popup_domains(text), {"popup.example", "pop2.example", "doc.example"})
+
+    COSMETIC = "\n".join([
+        "##.ad-box", "###banner_ad", "##div[id^=\"ad-\"]", "news.example,shop.example##.promo", "news.example##.promo2",
+        "~kids.example##.sponsor", "news.example,~m.news.example##.mixed", "google.*##.tld-wildcard",
+        "##.text-ad:has-text(Sponsored)", "example.com#?#.x:-abp-has(.y)", "example.com#$#.z { color: red }",
+        "allowed.example#@#.ad-box", "##.ad-box", "! comment ##.not", "news.example##.promo"])
+
+    def test_parse_cosmetic_rules(self):
+        data = bb.parse_abp_cosmetic_rules(self.COSMETIC)
+        self.assertEqual(data["generic"], [".ad-box", "#banner_ad", 'div[id^="ad-"]', ".sponsor"])
+        self.assertEqual(data["exceptions"], {".ad-box": ["allowed.example"], ".sponsor": ["kids.example"]})
+        self.assertEqual(sorted(map(tuple, (map(tuple, x) for x in data["specific"]))),
+                         [(("news.example",), (".promo2", ".promo")), (("news.example", "shop.example"), (".promo",))])
+
+    def test_cosmetic_rules_json(self):
+        data = bb.merge_cosmetic_rules([bb.parse_abp_cosmetic_rules(self.COSMETIC),
+                                        {"generic": [".extra"], "exceptions": {}, "specific": [[["shop.example"], [".s"]]]}])
+        rules = json.loads(bb.build_cosmetic_rules_json(data))
+        everywhere = [r for r in rules if r["trigger"] == {"url-filter": ".*"}]
+        self.assertEqual([r["action"] for r in everywhere],
+                         [{"type": "css-display-none", "selector": '#banner_ad, div[id^="ad-"], .extra'}])
+        excepted = {r["action"]["selector"]: r["trigger"] for r in rules if "unless-domain" in r["trigger"]}
+        self.assertEqual(excepted[".ad-box"], {"url-filter": ".*", "unless-domain": ["*allowed.example"],
+                                               "resource-type": ["document"]})
+        per_site = {r["trigger"]["url-filter"]: set(r["action"]["selector"].split(", ")) for r in rules
+                    if r["trigger"]["url-filter"] != ".*"}
+        self.assertEqual(per_site, {"^https?://([a-z0-9-]+\\.)*news\\.example[:/]": {".promo", ".promo2"},
+                                    "^https?://([a-z0-9-]+\\.)*shop\\.example[:/]": {".promo", ".s"}})
+        self.assertTrue(all(r["trigger"].get("resource-type") == ["document"] for r in rules
+                            if r["trigger"]["url-filter"] != ".*" or "unless-domain" in r["trigger"]))
+        old = bb.COSMETIC_SELECTORS_PER_RULE
+        self.addCleanup(setattr, bb, "COSMETIC_SELECTORS_PER_RULE", old)
+        bb.COSMETIC_SELECTORS_PER_RULE = 2
+        rules = json.loads(bb.build_cosmetic_rules_json({"generic": list("abcde")}))
+        self.assertEqual([r["action"]["selector"] for r in rules], ["a, b", "c, d", "e"])
+
+    def test_site_of(self):
+        for host, site in (("mail.google.com", "google.com"), ("google.com", "google.com"), ("www.bbc.co.uk", "bbc.co.uk"),
+                           ("shop.example.in", "example.in"), ("a.b.irctc.co.in", "irctc.co.in"),
+                           ("127.0.0.1", "127.0.0.1"), ("localhost", "localhost"), ("", "")):
+            self.assertEqual(bb.site_of(host), site, host)
+
+    def test_parse_keeps_only_safe_whole_domain_rules(self):
+        self.assertEqual(bb.parse_abp_domain_rules(self.LIST),
+                         {"tracker.example", "ads.example.net", "script.example", "upper.example"})
+
+    def test_rules_json_is_third_party_only_and_valid(self):
+        rules = json.loads(bb.build_content_blocker_rules_json({"tracker.example"}))
+        extra = [r for r in rules if "tracker\\.example" in r["trigger"]["url-filter"]]
+        self.assertEqual(len(extra), 1)
+        for r in extra:
+            self.assertEqual(r["trigger"]["load-type"], ["third-party"])
+            self.assertEqual(r["action"], {"type": "block"})
+        base = json.loads(bb.build_content_blocker_rules_json())
+        self.assertEqual(len(rules) - len(base), 1)
+
+    def test_cache_roundtrip(self):
+        tmp = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        old = bb.TRACKER_LIST_CACHE
+        bb.TRACKER_LIST_CACHE = os.path.join(tmp, "t.json")
+        self.addCleanup(setattr, bb, "TRACKER_LIST_CACHE", old)
+        self.assertEqual(bb.load_tracker_list_cache(), (set(), 0.0))
+        write_json(bb.TRACKER_LIST_CACHE, {"fetched": 5, "domains": ["a.example", 7]})
+        self.assertEqual(bb.load_tracker_list_cache(), ({"a.example"}, 5.0))
+
+
+class TrackerListFetchTests(TmpDirCase):
+    def setUp(self):
+        super().setUp()
+        for name in ("TRACKER_LIST_CACHE", "POPUP_LIST_CACHE", "CACHE_DIR"):
+            self.addCleanup(setattr, bb, name, getattr(bb, name))
+        bb.CACHE_DIR = self.tmp
+        bb.TRACKER_LIST_CACHE = os.path.join(self.tmp, "t.json")
+        bb.POPUP_LIST_CACHE = os.path.join(self.tmp, "p.json")
+        self.addCleanup(bb.COSMETIC_CACHES.update, dict(bb.COSMETIC_CACHES))
+        bb.COSMETIC_CACHES.update(ads=os.path.join(self.tmp, "ca.json"), cookies=os.path.join(self.tmp, "cc.json"))
+        # never the real cookie list from the network: a local file that isn't there (the download fails)
+        self.addCleanup(setattr, bb.fetch_tracker_list, "__defaults__", bb.fetch_tracker_list.__defaults__)
+        bb.fetch_tracker_list.__defaults__ = (bb.TRACKER_LIST_URLS, 20, "file://" + os.path.join(self.tmp, "none.txt"))
+
+    def list_url(self, name, domains):
+        path = os.path.join(self.tmp, name)
+        write_text(path, "\n".join(f"||{d}^" for d in domains))
+        return "file://" + path
+
+    def test_lists_are_merged_in_priority_order(self):
+        trackers = self.list_url("easyprivacy.txt", [f"t{i}.example" for i in range(150)] + ["shared.example"])
+        ads = self.list_url("easylist.txt", [f"a{i}.example" for i in range(150)]
+                            + ["shared.example", "sub.shared.example", "x.ad.example", "ad.example"])
+        old_max = bb.TRACKER_LIST_MAX_DOMAINS
+        self.addCleanup(setattr, bb, "TRACKER_LIST_MAX_DOMAINS", old_max)
+        bb.TRACKER_LIST_MAX_DOMAINS = 200
+        domains = bb.fetch_tracker_list((trackers, ads))
+        self.assertEqual(len(domains), 200, "capped")
+        self.assertTrue({f"t{i}.example" for i in range(150)} <= domains, "the first list is kept whole")
+        self.assertNotIn("sub.shared.example", domains, "covered by shared.example")
+        bb.TRACKER_LIST_MAX_DOMAINS = old_max
+        domains = bb.fetch_tracker_list((trackers, ads))
+        self.assertIn("ad.example", domains)
+        self.assertNotIn("x.ad.example", domains, "covered by ad.example")
+        with open(bb.TRACKER_LIST_CACHE) as f:
+            self.assertEqual(json.load(f)["sources"], [trackers, ads])
+        self.assertEqual(bb.load_tracker_list_cache()[0], domains)
+
+    def test_popup_ad_domains_are_saved_apart(self):
+        trackers = self.list_url("easyprivacy.txt", [f"t{i}.example" for i in range(150)])
+        ads = os.path.join(self.tmp, "easylist.txt")
+        write_text(ads, "\n".join([f"||a{i}.example^" for i in range(150)]
+                                  + ["||pop.example^$popup", "||pop3.example^$popup,third-party"]))
+        self.assertEqual(bb.load_popup_domains(), frozenset())
+        domains = bb.fetch_tracker_list((trackers, "file://" + ads))
+        self.assertNotIn("pop.example", domains, "pop-up-only rules stay out of the content blocker")
+        self.assertEqual(bb.load_popup_domains(), {"pop.example", "pop3.example"})
+
+    def test_element_hiding_rules_are_saved_and_a_missing_cookie_list_is_no_failure(self):
+        trackers = self.list_url("easyprivacy.txt", [f"t{i}.example" for i in range(150)])
+        ads = os.path.join(self.tmp, "easylist.txt")
+        write_text(ads, "\n".join([f"||a{i}.example^" for i in range(150)] + ["##.ad-box", "news.example##.promo"]))
+        bb.fetch_tracker_list((trackers, "file://" + ads))
+        with open(bb.COSMETIC_CACHES["ads"]) as f:
+            self.assertEqual(json.load(f), {"generic": [".ad-box"], "exceptions": {},
+                                            "specific": [[["news.example"], [".promo"]]]})
+        self.assertFalse(os.path.exists(bb.COSMETIC_CACHES["cookies"]), "no cookie list: nothing written")
+        cookies = os.path.join(self.tmp, "cookies.txt")
+        write_text(cookies, "\n".join(f"##.consent-{i}" for i in range(120)))
+        bb.fetch_tracker_list((trackers, "file://" + ads), cookie_url="file://" + cookies)
+        with open(bb.COSMETIC_CACHES["cookies"]) as f:
+            self.assertEqual(len(json.load(f)["generic"]), 120)
+
+    def test_one_bad_list_keeps_the_old_cache(self):
+        write_json(bb.TRACKER_LIST_CACHE, {"fetched": 5, "domains": ["old.example"]})
+        good = self.list_url("easyprivacy.txt", [f"t{i}.example" for i in range(150)])
+        with self.assertRaises(ValueError):
+            bb.fetch_tracker_list((good, self.list_url("easylist.txt", ["only.example"])))
+        self.assertEqual(bb.load_tracker_list_cache(), ({"old.example"}, 5.0))
+
+    def test_summary_spares_reading_the_whole_list(self):
+        self.assertIsNone(bb.tracker_list_summary())
+        write_json(bb.TRACKER_LIST_CACHE, {"fetched": 7, "domains": ["a.example", "b.example", 3]})
+        summary = bb.tracker_list_summary()
+        self.assertEqual((summary["fetched"], summary["count"], summary["sources"]), (7.0, 2, [bb.TRACKER_LIST_URLS[0]]))
+        summary_path = os.path.join(self.tmp, "t-summary.json")
+        self.assertTrue(os.path.exists(summary_path))
+        with open(bb.TRACKER_LIST_CACHE, "r+") as f:  # same size and time: the list itself must not be read again
+            st = os.stat(f.name)
+            text = f.read().replace("a.example", "x.example")
+            f.seek(0)
+            f.write(text)
+        os.utime(bb.TRACKER_LIST_CACHE, ns=(st.st_atime_ns, st.st_mtime_ns))
+        os.chmod(bb.TRACKER_LIST_CACHE, 0)
+        try:
+            self.assertEqual(bb.tracker_list_summary()["count"], 2, "answered from the summary file")
+        finally:
+            os.chmod(bb.TRACKER_LIST_CACHE, 0o600)
+        write_json(bb.TRACKER_LIST_CACHE, {"fetched": 9, "sources": ["s"], "domains": ["only.example"]})
+        self.assertEqual(bb.tracker_list_summary()["count"], 1, "a changed list is summarised again")
+        write_json(summary_path, "garbage")
+        self.assertEqual(bb.tracker_list_summary()["fetched"], 9.0)
+
+    def test_staleness(self):
+        now = time.time()
+        self.assertTrue(bb.tracker_list_is_stale(now), "nothing downloaded yet")
+        write_json(bb.TRACKER_LIST_CACHE, {"fetched": now, "domains": ["a.example"]})
+        self.assertTrue(bb.tracker_list_is_stale(now), "a cache from before EasyList was added")
+        write_json(bb.TRACKER_LIST_CACHE, {"fetched": now, "sources": list(bb.TRACKER_LIST_URLS), "domains": []})
+        self.assertTrue(bb.tracker_list_is_stale(now), "lists from before the pop-up blocker")
+        write_json(bb.POPUP_LIST_CACHE, {"fetched": now, "domains": []})
+        self.assertTrue(bb.tracker_list_is_stale(now), "lists from before element hiding")
+        write_json(bb.COSMETIC_CACHES["ads"], {"generic": [], "exceptions": {}, "specific": []})
+        self.assertFalse(bb.tracker_list_is_stale(now))
+        self.assertTrue(bb.tracker_list_is_stale(now + bb.TRACKER_LIST_MAX_AGE + 1), "a week old")
+
+
+class UrlRulesTests(TmpDirCase):
+    PROVIDERS = {
+        "globalRules": {"urlPattern": ".*", "rules": ["(?:%3F)?utm(?:_[a-z_]*)?", "(?:%3F)?[a-z]?mc"],
+                        "referralMarketing": ["(?:%3F)?ref_?"],
+                        "exceptions": ["^https?:\\/\\/(?:[a-z0-9-]+\\.)*?gitlab\\.com"]},
+        "shop": {"urlPattern": "^https?:\\/\\/(?:[a-z0-9-]+\\.)*?shop\\.example", "rules": ["tag", "pf_rd_[a-z]*"],
+                 "rawRules": ["\\/ref=[^/?]*"], "completeProvider": False},
+        "search": {"urlPattern": "^https?:\\/\\/search\\.example", "rules": ["ved"],
+                   "redirections": ["^https?:\\/\\/search\\.example\\/url\\?.*?(?:url|q)=([^&]+)"]},
+        "blocked": {"urlPattern": "^https?:\\/\\/ads\\.example", "completeProvider": True},
+        "broken": {"urlPattern": "^https?:\\/\\/broken\\.example", "rules": ["(?<bad", "id2"]},
+        "notadict": "x",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.rules = bb.compile_url_rules(self.PROVIDERS)
+
+    def clean(self, url):
+        return bb.sanitize_url(url, self.rules)
+
+    def test_site_rules(self):
+        self.assertEqual(len(self.rules), 5, "the provider that isn't a dict is skipped")
+        self.assertEqual(self.clean("https://www.shop.example/item/ref=sr_1?tag=aff&PF_RD_P=1&id=5&mc=1&amc=2"),
+                         "https://www.shop.example/item?id=5")
+        self.assertEqual(self.clean("https://other.example/?tag=aff&utm_x=1&ref=main"), "https://other.example/?tag=aff&ref=main",
+                         "site rules stay on their site; referral tags (GitHub's ?ref=) are kept")
+        self.assertEqual(self.clean("https://gitlab.com/a?mc=1&utm_source=x"), "https://gitlab.com/a?mc=1",
+                         "an exception turns the downloaded rules off, built-in ones still apply")
+        self.assertEqual(self.clean("https://ads.example/x?utm_source=1"), "https://ads.example/x", "pages are never blocked")
+        self.assertEqual(self.clean("https://broken.example/?id2=1&k=2"), "https://broken.example/?k=2",
+                         "a pattern Python can't compile is skipped, the rest still work")
+
+    def test_background_compile_never_blocks(self):
+        for name in ("URL_RULES_CACHE",):
+            self.addCleanup(setattr, bb, name, getattr(bb, name))
+        bb.URL_RULES_CACHE = os.path.join(self.tmp, "rules.json")
+        write_json(bb.URL_RULES_CACHE, {"fetched": 9, "providers": self.PROVIDERS})
+        self.assertEqual(bb.load_url_rules_cache(block=False), ([], 0.0), "not compiled yet: built-in cleaning only")
+        deadline = time.time() + 5
+        while not bb.load_url_rules_cache(block=False)[0] and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(len(bb.load_url_rules_cache(block=False)[0]), 5)
+
+    def test_tracking_redirect_is_skipped(self):
+        self.assertEqual(self.clean("https://search.example/url?ved=1&q=https%3A%2F%2Fshop.example%2Fp%3Ftag%3Da%26id%3D5&usg=2"),
+                         "https://shop.example/p?id=5", "the destination is cleaned too")
+        self.assertEqual(self.clean("https://search.example/url?q=javascript%3Aalert(1)&ved=1"),
+                         "https://search.example/url?q=javascript%3Aalert(1)", "only http(s) destinations")
+        self.assertEqual(bb.secure_and_clean_url("https://search.example/url?q=http%3A%2F%2Fnews.example%2F",
+                                                 url_rules=self.rules), ("https://news.example/", True, True),
+                         "a destination reached by skipping a redirect is upgraded to HTTPS too")
+
+    def test_fetch_falls_back_and_caches(self):
+        for name in ("URL_RULES_CACHE", "CACHE_DIR"):
+            self.addCleanup(setattr, bb, name, getattr(bb, name))
+        bb.CACHE_DIR = self.tmp
+        bb.URL_RULES_CACHE = os.path.join(self.tmp, "rules.json")
+        self.assertEqual(bb.load_url_rules_cache(), ([], 0.0))
+        providers = {f"site{i}": {"urlPattern": f"^https?:\\/\\/site{i}\\.example", "rules": ["sid"]} for i in range(60)}
+        good = os.path.join(self.tmp, "data.json")
+        write_json(good, {"providers": providers})
+        small = os.path.join(self.tmp, "small.json")
+        write_json(small, {"providers": self.PROVIDERS})
+        with self.assertRaises(ValueError):
+            bb.fetch_url_rules(("file://" + small,))
+        self.assertEqual(bb.fetch_url_rules(("file://" + os.path.join(self.tmp, "missing.json"), "file://" + good)), 60)
+        rules, fetched = bb.load_url_rules_cache()
+        self.assertEqual(len(rules), 60)
+        self.assertGreater(fetched, 0)
+        self.assertIs(bb.load_url_rules_cache()[0], rules, "compiled once, not on every navigation")
+        self.assertIs(bb.load_url_rules_cache(block=False)[0], rules)
+        self.assertEqual(bb.sanitize_url("https://site7.example/?sid=1&a=2", rules), "https://site7.example/?a=2")
+
+
+class LaunchTests(TmpDirCase):
+    """Every way of starting the browser goes through the same import-based start, so the compiled code
+    in __pycache__ is reused instead of recompiling arrow_browser.py on each launch."""
+    LAUNCHERS = ("arrow-browser", "install-ubuntu.sh", "install-fedora.sh", "install-wsl.sh")
+
+    def fake_app(self, directory):
+        os.makedirs(directory, exist_ok=True)
+        write_text(os.path.join(directory, "arrow_browser.py"),
+                   f"RELEASE_SERIES = {bb.RELEASE_SERIES}\n"
+                   "import sys, json\nif __name__ == '__main__':\n    print(json.dumps([__name__, __file__, sys.argv]))\n")
+
+    def test_launchers_share_one_start_command(self):
+        for name in self.LAUNCHERS:
+            with open(os.path.join(ROOT, name)) as f:
+                text = f.read()
+            self.assertIn("python3 -c '" + bb.LAUNCH_SNIPPET + "'", text, name)
+            self.assertNotIn("exec python3 \"", text.replace("exec python3 -c", ""), name + " still runs the file directly")
+
+    def test_start_command_runs_the_file_as_main_and_caches_it(self):
+        import subprocess
+        app = os.path.join(self.tmp, "app")
+        self.fake_app(app)
+        argv = bb.launch_argv(os.path.join(app, "arrow_browser.py"), ["--x", "https://a.example"])
+        out = json.loads(subprocess.run(argv, capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out, ["__main__", os.path.join(app, "arrow_browser.py"),
+                               [os.path.join(app, "arrow_browser.py"), "--x", "https://a.example"]])
+        self.assertTrue(any(n.startswith("arrow_browser.") for n in os.listdir(os.path.join(app, "__pycache__"))))
+
+    def test_launcher_prefers_the_per_user_copy(self):
+        import subprocess
+        user_app = os.path.join(self.tmp, ".local", "share", "arrow-browser")
+        self.fake_app(user_app)
+        out = subprocess.run(["bash", os.path.join(ROOT, "arrow-browser"), "https://b.example"],
+                             capture_output=True, text=True, check=True, env=dict(os.environ, HOME=self.tmp)).stdout
+        self.assertEqual(json.loads(out)[2], [os.path.join(user_app, "arrow_browser.py"), "https://b.example"])
+
+
+class StatsTests(TmpDirCase):
+    def test_roundtrip_and_defaults(self):
+        old = bb.STATS_FILE
+        bb.STATS_FILE = os.path.join(self.tmp, "s.json")
+        self.addCleanup(setattr, bb, "STATS_FILE", old)
+        fresh = bb.load_privacy_stats()
+        self.assertEqual((fresh["blocked"], fresh["params"], fresh["https"], fresh["popups"]), (0, 0, 0, 0))
+        bb.save_privacy_stats({"since": 1.0, "blocked": 4, "params": 2, "https": 9})
+        self.assertEqual(bb.load_privacy_stats(), {"since": 1.0, "blocked": 4, "params": 2, "https": 9, "popups": 0},
+                         "stats saved before the pop-up blocker start it at 0")
+        bb.save_privacy_stats({"since": 1.0, "blocked": 4, "params": 2, "https": 9, "popups": 3})
+        self.assertEqual(bb.load_privacy_stats()["popups"], 3)
+
+
+class UpdateInfoTests(unittest.TestCase):
+    """fetch_release_info must prefer the API, fall back to the cached raw address, and fail loudly."""
+
+    def _run(self, responses):
+        calls = []
+
+        class Resp:
+            def __init__(self, status, body): self.status, self.body = status, body
+            def read(self, n): return self.body
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake_urlopen(req, timeout=0):
+            calls.append((req.full_url, req.get_header("Accept")))
+            outcome = responses[len(calls) - 1]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return Resp(*outcome)
+
+        original = bb.urllib.request.urlopen
+        bb.urllib.request.urlopen = fake_urlopen
+        try:
+            return bb.fetch_release_info("test", sources=bb.UPDATE_INFO_SOURCES), calls
+        finally:
+            bb.urllib.request.urlopen = original
+
+    def test_api_answer_wins(self):
+        data, calls = self._run([(200, b'{"version": "9.9.9", "sha256": "x"}')])
+        self.assertEqual(data["version"], "9.9.9")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("api.github.com", calls[0][0])
+        self.assertEqual(calls[0][1], "application/vnd.github.raw+json")
+
+    def test_falls_back_when_api_is_rate_limited_or_odd(self):
+        for first in (OSError("HTTP Error 403: rate limit exceeded"), (200, b"not json"), (200, b'{"nope": 1}'), (500, b"")):
+            data, calls = self._run([first, (200, b'{"version": "1.2.3"}')])
+            self.assertEqual(data["version"], "1.2.3")
+            self.assertIn("raw.githubusercontent.com", calls[1][0])
+
+    def test_version_must_be_plain_numbers(self):
+        # it goes into the download address and on-screen markup
+        for bad in (b'{"version": "../main"}', b'{"version": "1.2.3<b>"}', b'{"version": "1.2"}'):
+            with self.assertRaises(ValueError):
+                self._run([(200, bad), (200, bad)])
+
+    def test_raises_when_every_source_fails(self):
+        with self.assertRaises(OSError):
+            self._run([OSError("boom1"), OSError("boom2")])
+
+
+@unittest.skipUnless(os.environ.get("ARROW_TEST_KEYRING", "1") == "1", "keyring tests disabled")
+class SecretServiceTests(unittest.TestCase):
+    def test_logins_saved_before_the_rename_are_found_and_moved(self):
+        old = bb.SecretServiceClient(application="arrow-browser-test-old", legacy_applications=())
+        if not old.available():
+            self.skipTest(f"no Secret Service on this machine: {old.error}")
+        new = bb.SecretServiceClient(application="arrow-browser-test", legacy_applications=("arrow-browser-test-old",))
+        host = f"rename-{int(time.time())}.example"
+        try:
+            self.assertTrue(old.store(host, "alice", "before"))
+            found = new.find(host)
+            self.assertEqual([(f["host"], f["username"]) for f in found], [(host, "alice")], "old login still found")
+            self.assertEqual(new.get_password(found[0]["item"]), "before")
+            self.assertTrue(new.store(host, "alice", "after"))
+            self.assertEqual(old.find(host), [], "saved again under the new name, old entry removed")
+            found = new.find(host)
+            self.assertEqual(len(found), 1)
+            self.assertEqual(new.get_password(found[0]["item"]), "after")
+        finally:
+            for client in (old, new):
+                for f in client.find(host):
+                    client.delete(f["item"])
+
+    def test_roundtrip_against_real_keyring(self):
+        client = bb.SecretServiceClient(application="arrow-browser-test")
+        if not client.available():
+            self.skipTest(f"no Secret Service on this machine: {client.error}")
+        host = f"unittest-{int(time.time())}.example"
+        try:
+            self.assertTrue(client.store(host, "alice", "s3cret é中"))
+            self.assertTrue(client.store(host, "alice", "changed"), "same user replaces, not duplicates")
+            found = client.find(host)
+            self.assertEqual([(f["host"], f["username"]) for f in found], [(host, "alice")])
+            self.assertEqual(client.get_password(found[0]["item"]), "changed")
+            self.assertEqual(client.find("other-" + host), [])
+        finally:
+            for f in client.find(host):
+                client.delete(f["item"])
+        self.assertEqual(client.find(host), [])
+
+
+class GpuDriverTests(TmpDirCase):
+    def add_card(self, card, driver):
+        os.makedirs(os.path.join(self.tmp, "drivers", driver), exist_ok=True)
+        os.makedirs(os.path.join(self.tmp, "drm", card, "device"))
+        os.symlink(os.path.join(self.tmp, "drivers", driver), os.path.join(self.tmp, "drm", card, "device", "driver"))
+
+    def test_legacy_radeon_driver_is_unstable(self):
+        self.add_card("card0", "radeon")
+        self.assertTrue(bb._gpu_driver_is_unstable(os.path.join(self.tmp, "drm")))
+
+    def test_other_drivers_are_fine(self):
+        self.add_card("card0", "amdgpu")
+        self.add_card("card1", "i915")
+        self.assertFalse(bb._gpu_driver_is_unstable(os.path.join(self.tmp, "drm")))
+        self.assertFalse(bb._gpu_driver_is_unstable(os.path.join(self.tmp, "missing")))
+
+    def test_gpu_on_forces_compositing(self):
+        env = {"WEBKIT_SKIA_ENABLE_CPU_RENDERING": "1"}
+        bb._apply_gpu_environment(env, gpu_enabled=True, driver_unstable=False)
+        self.assertEqual(env["WEBKIT_FORCE_COMPOSITING_MODE"], "1")
+        self.assertNotIn("WEBKIT_DISABLE_COMPOSITING_MODE", env)
+
+    def test_gpu_off_keeps_compositing_available(self):
+        # Disabling compositing leaves WebKit without a backing store and crashes the UI process.
+        env = {"WEBKIT_FORCE_COMPOSITING_MODE": "1"}
+        bb._apply_gpu_environment(env, gpu_enabled=False, driver_unstable=False)
+        self.assertEqual(env, {"WEBKIT_SKIA_ENABLE_CPU_RENDERING": "1"})
+
+    def test_gpu_off_on_radeon_still_disables_compositing(self):
+        env = {}
+        bb._apply_gpu_environment(env, gpu_enabled=False, driver_unstable=True)
+        self.assertEqual(env["WEBKIT_DISABLE_COMPOSITING_MODE"], "1")
+        self.assertEqual(env["WEBKIT_SKIA_ENABLE_CPU_RENDERING"], "1")
+
+    def test_gpu_off_lifts_acceleration_policy_only_while_fullscreen(self):
+        # Policy NEVER turns fullscreen video black on WebKitGTK 2.52.
+        self.assertTrue(bb._wants_accelerated_policy(gpu_enabled=True, fullscreen=False, driver_unstable=False))
+        self.assertFalse(bb._wants_accelerated_policy(gpu_enabled=False, fullscreen=False, driver_unstable=False))
+        self.assertTrue(bb._wants_accelerated_policy(gpu_enabled=False, fullscreen=True, driver_unstable=False))
+        self.assertFalse(bb._wants_accelerated_policy(gpu_enabled=False, fullscreen=True, driver_unstable=True))
+
+
+class MemoryPressureTests(unittest.TestCase):
+    def test_low_means_under_ten_percent_or_400_mb_available(self):
+        self.assertTrue(bb.is_memory_low(600, 8000), "under 10% of 8 GB")
+        self.assertFalse(bb.is_memory_low(900, 8000))
+        self.assertTrue(bb.is_memory_low(350, 2000), "under the 400 MB floor on a small machine")
+        self.assertFalse(bb.is_memory_low(450, 2000))
+
+    def test_reads_proc_meminfo(self):
+        available, total = bb.system_memory_mb()
+        self.assertGreater(total, 0)
+        self.assertTrue(0 < available <= total)
+
+
+class WebProcessCrashTests(unittest.TestCase):
+    """on_web_process_terminated named a reason WebKit doesn't have (EXCEEDED_MEMORY), so every crash raised
+    AttributeError: crashed tabs were never reloaded and no notice page appeared."""
+
+    def terminate(self, reason):
+        from types import SimpleNamespace
+        from unittest import mock
+        browser = SimpleNamespace(_crash_counts={}, homepage="about:blank", context_id=0,
+                                  statusbar=mock.Mock(), MAX_AUTO_RELOAD_CRASHES=3)
+        webview = mock.Mock()
+        webview.get_uri.return_value = "https://example.com/"
+        with mock.patch.object(bb.GLib, "idle_add", lambda fn: fn()):
+            bb.ArrowBrowserWindow.on_web_process_terminated(browser, webview, reason)
+        return webview
+
+    def test_crashed_tab_reloads(self):
+        webview = self.terminate(bb.WebKit2.WebProcessTerminationReason.CRASHED)
+        webview.load_uri.assert_called_once_with("https://example.com/")
+
+    def test_out_of_memory_tab_shows_notice(self):
+        webview = self.terminate(bb.WebKit2.WebProcessTerminationReason.EXCEEDED_MEMORY_LIMIT)
+        webview.load_uri.assert_not_called()
+        self.assertIn("ran out of memory", webview.load_html.call_args[0][0])
+
+
+
+class SearchTests(unittest.TestCase):
+    def test_new_installs_search_with_duckduckgo(self):
+        self.assertEqual(bb.DEFAULT_SEARCH_ENGINE, "DuckDuckGo")
+        self.assertIn(bb.DEFAULT_SEARCH_ENGINE, bb.SEARCH_ENGINES)
+        self.assertEqual(bb.sanitize_homepage_url(""), "https://duckduckgo.com")
+        for name in ("Brave Search", "Startpage", "Qwant", "Google"):
+            self.assertIn("{query}", bb.SEARCH_ENGINES[name])
+
+    def test_search_url_encodes_the_whole_query(self):
+        self.assertEqual(bb.search_url("https://s.example/?q={query}", "a/b & c?"),
+                         "https://s.example/?q=a%2Fb%20%26%20c%3F")
+        self.assertEqual(bb.search_url("https://s.example/{x}?q={query}", "hi"), "https://s.example/{x}?q=hi",
+                         "other braces in a user's template are left alone")
+
+    def test_shortcuts(self):
+        self.assertEqual(bb.resolve_search_shortcut("w taj mahal"),
+                         "https://en.wikipedia.org/wiki/Special:Search?search=taj%20mahal")
+        self.assertEqual(bb.resolve_search_shortcut("YT  lofi music "),
+                         "https://www.youtube.com/results?search_query=lofi%20music")
+        self.assertIsNone(bb.resolve_search_shortcut("w"), "a shortcut alone is an ordinary search")
+        self.assertIsNone(bb.resolve_search_shortcut("weather today"))
+        mine = [{"name": "Amazon", "keyword": "az", "url": "https://www.amazon.in/s?k={query}"}]
+        self.assertEqual(bb.resolve_search_shortcut("az usb cable", mine), "https://www.amazon.in/s?k=usb%20cable")
+
+    def test_typed_text_is_address(self):
+        for text in ("example.com", "example.com/path?q=1", "node.js", "localhost", "localhost:3000/app",
+                     "printer:631", "router/", "192.168.1.1", "10.0.0.5:8080/admin", "my.lan"):
+            self.assertTrue(bb.typed_text_is_address(text), text)
+        for text in ("weather", "python", "facebook", "cricket score", "2.5", "what:is", "", "a .b"):
+            self.assertFalse(bb.typed_text_is_address(text), text)
+
+    def test_search_templates_from_users(self):
+        self.assertEqual(bb.normalize_search_template(" https://x.example/s?q=%s "), "https://x.example/s?q={query}")
+        self.assertEqual(bb.normalize_search_template("https://x.example/s?q={query}"), "https://x.example/s?q={query}")
+        for bad in ("https://x.example/s", "javascript:alert(%s)", "file:///etc/%s", "x.example/?q=%s",
+                    "https://x.example/?a=%s&b=%s", "", None):
+            self.assertIsNone(bb.normalize_search_template(bad), bad)
+
+    def test_custom_engines_from_settings_are_checked(self):
+        cleaned = bb.clean_custom_search_engines([
+            {"name": "Amazon", "keyword": "AZ", "url": "https://www.amazon.in/s?k=%s"},
+            {"name": "amazon", "keyword": "am", "url": "https://a.example/?q=%s"},   # same name
+            {"name": "Mine", "keyword": "w", "url": "https://m.example/?q=%s"},      # built-in shortcut
+            {"name": "Google", "keyword": "", "url": "https://g.example/?q=%s"},     # built-in engine
+            {"name": "Bad", "keyword": "", "url": "javascript:%s"},
+            {"name": "Two words", "keyword": "a b", "url": "https://t.example/?q=%s"},
+            "junk", {"name": "", "url": "https://e.example/?q=%s"},
+            {"name": "No key", "keyword": "", "url": "https://n.example/?q=%s"},
+        ])
+        self.assertEqual(cleaned, [{"name": "Amazon", "keyword": "az", "url": "https://www.amazon.in/s?k={query}"},
+                                   {"name": "No key", "keyword": "", "url": "https://n.example/?q={query}"}])
+        self.assertEqual(bb.clean_custom_search_engines("not a list"), [])
+
+
+class BackupTests(unittest.TestCase):
+    MARKS = [{"url": "https://a.example/?x=1&y=<2>", "title": "A & \"B\" <c>", "added": 1700000000},
+             {"url": "javascript:alert(1)", "title": "bad"},
+             {"url": "http://b.example/", "title": "", "added": "junk"}]
+
+    def test_exported_bookmarks_import_back(self):
+        html = bb.export_netscape_bookmarks(self.MARKS)
+        self.assertTrue(html.startswith("<!DOCTYPE NETSCAPE-Bookmark-file-1>"))
+        self.assertNotIn("javascript:", html)
+        back = bb.parse_netscape_bookmarks(html)
+        self.assertEqual([(b["url"], b["title"]) for b in back],
+                         [("https://a.example/?x=1&y=<2>", 'A & "B" <c>'), ("http://b.example/", "http://b.example/")])
+        self.assertEqual(back[0]["added"], 1700000000)
+
+    def test_backup_round_trip_leaves_out_this_computers_settings(self):
+        settings = {"homepage": "https://h.example", "adblock_enabled": False, "download_dir": "/home/me/dl",
+                    "gpu_acceleration_enabled": True, "first_run_greeted": True}
+        sites = {"a.example": {"zoom": 1.5, "permissions": {"media": "allow"}, "popups": True}}
+        backup = bb.build_backup(settings, self.MARKS, sites, now=5)
+        self.assertEqual(backup["settings"], {"homepage": "https://h.example", "adblock_enabled": False})
+        restored = bb.read_backup(json.dumps(backup).encode())
+        self.assertEqual(restored["settings"], backup["settings"])
+        self.assertEqual([b["url"] for b in restored["bookmarks"]], ["https://a.example/?x=1&y=<2>", "http://b.example/"])
+        self.assertIsInstance(restored["bookmarks"][1]["added"], float)
+        self.assertEqual(restored["site_settings"], sites)
+
+    def test_restore_rejects_other_files_and_odd_values(self):
+        for raw in (b"", b"\xff\xfe", b"[]", b'{"arrow_backup": 2}', b'{"settings": {}}', b"x" * (bb.BACKUP_MAX_BYTES + 1)):
+            with self.assertRaises(ValueError):
+                bb.read_backup(raw)
+        raw = json.dumps({"arrow_backup": 1, "settings": {"download_dir": "/x", "adblock_enabled": True},
+                          "bookmarks": "nope", "site_settings": {
+                              "OK.example": {"zoom": 9, "adblock": "no", "javascript": False, "evil": 1,
+                                             "permissions": {"media": "allow", "files": "allow", "location": "maybe"}},
+                              "bad host/": {"javascript": False}, "empty.example": {"zoom": True}}}).encode()
+        restored = bb.read_backup(raw)
+        self.assertEqual(restored["settings"], {"adblock_enabled": True})
+        self.assertEqual(restored["bookmarks"], [])
+        self.assertEqual(restored["site_settings"], {"ok.example": {"javascript": False, "permissions": {"media": "allow"}}})
+
+
+class ResumableDownloadTests(TmpDirCase):
+    def test_content_range(self):
+        self.assertEqual(bb.parse_content_range("bytes 100-199/1000"), (100, 199, 1000))
+        self.assertEqual(bb.parse_content_range("bytes 0-0/*"), (0, 0, None))
+        for bad in ("bytes 5-4/10", "bytes 0-10/10", "items 0-1/2", "", None, "bytes */10"):
+            self.assertIsNone(bb.parse_content_range(bad), bad)
+
+    def test_resume_plan(self):
+        self.assertEqual(bb.resume_plan(206, "bytes 500-999/1000", 500), ("append", 1000))
+        self.assertEqual(bb.resume_plan(206, "bytes 400-999/1000", 500)[0], "fail", "wrong part")
+        self.assertEqual(bb.resume_plan(200, None, 500), ("restart", None))
+        self.assertEqual(bb.resume_plan(416, "bytes */500", 500), ("done", 500))
+        self.assertEqual(bb.resume_plan(416, "bytes */900", 500)[0], "fail")
+        self.assertEqual(bb.resume_plan(404, None, 0), ("fail", "the server answered 404"))
+
+    def test_status_text(self):
+        self.assertEqual(bb.format_bytes(0), "0 B")
+        self.assertEqual(bb.format_bytes(1536), "1.5 KB")
+        self.assertEqual(bb.format_bytes(5 * 1024 ** 3), "5.0 GB")
+        self.assertEqual(bb.format_duration(75), "1 min 15 s")
+        entry = {"status": "Downloading...", "received": 1024 ** 2, "total": 3 * 1024 ** 2, "speed": 1024 ** 2}
+        self.assertEqual(bb.download_status_text(entry), "1.0 MB of 3.0 MB · 1.0 MB/s · 2 s left")
+        entry.update(status="Paused", speed=0)
+        self.assertEqual(bb.download_status_text(entry), "Paused · 1.0 MB of 3.0 MB")
+        entry.update(status="Failed ❌", error="timed out")
+        self.assertEqual(bb.download_status_text(entry), "Failed: timed out · 1.0 MB of 3.0 MB")
+        self.assertEqual(bb.download_status_text({"status": "Completed ✅", "received": 13, "total": 13}), "Done · 13 B")
+
+    def test_resume_redirects_keep_cookies_on_their_site(self):
+        import http.server
+        import threading
+        seen = {}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                seen[(self.headers.get("Host").split(":")[0], self.path)] = self.headers.get("Cookie")
+                if self.path in ("/away", "/same"):
+                    host = "localhost" if self.path == "/away" else "127.0.0.1"
+                    self.send_response(302)
+                    self.send_header("Location", f"http://{host}:{self.server.server_port}/file")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        port = server.server_port
+        for path in ("/away", "/same"):
+            request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers={"Cookie": "sid=1"})
+            with bb._RESUME_OPENER.open(request, timeout=5) as response:
+                self.assertEqual(response.read(), b"ok")
+        self.assertEqual(seen[("127.0.0.1", "/away")], "sid=1")
+        self.assertIsNone(seen[("localhost", "/file")], "cookies don't follow a redirect to another site")
+        self.assertEqual(seen[("127.0.0.1", "/file")], "sid=1", "a redirect within the site keeps them")
+        handler = bb._ResumeRedirectHandler()
+        with self.assertRaises(urllib.error.HTTPError):
+            handler.redirect_request(urllib.request.Request("https://a.example/f"), None, 302, "Found", {},
+                                     "http://a.example/f")
+
+    def test_partial_download_is_kept_by_a_link(self):
+        working, part = os.path.join(self.tmp, "f.wkdownload"), os.path.join(self.tmp, "f.part")
+        write_text(working, "abc")
+        self.assertEqual(bb.keep_partial_download(working, part), 3)
+        os.remove(working)  # what WebKit does on cancel
+        with open(part) as f:
+            self.assertEqual(f.read(), "abc")
+        self.assertEqual(os.stat(part).st_mode & 0o077, 0)
+
+    def run_job(self, part, responses, stop_after=None):
+        import io
+        from gi.repository import GLib
+        sent = []
+
+        class Response(io.BytesIO):
+            def __init__(self, status, headers, body):
+                super().__init__(body)
+                self.status, self.headers = status, headers
+
+        def opener(request, timeout):
+            sent.append(dict(request.header_items()))
+            return Response(*responses.pop(0))
+
+        ended, progress = [], []
+
+        def on_progress(received, total):
+            progress.append(received)
+            if stop_after and received >= stop_after:
+                job.stop()
+        job = bb.ResumeJob("https://f.example/file", part, {"User-Agent": "t", "If-Range": '"v1"'}, on_progress,
+                           lambda outcome, detail: ended.append((outcome, detail)), opener=opener)
+        job.start()
+        context = GLib.MainContext.default()
+        deadline = time.time() + 5
+        while not ended and time.time() < deadline:
+            context.iteration(False)
+            time.sleep(0.01)
+        return ended[0] if ended else None, sent, job
+
+    def test_job_appends_the_rest(self):
+        part = os.path.join(self.tmp, "f.part")
+        write_text(part, "hello ")
+        ended, sent, _ = self.run_job(part, [(206, {"Content-Range": "bytes 6-10/11"}, b"world")])
+        self.assertEqual(ended, ("done", None))
+        self.assertEqual(sent[0]["Range"], "bytes=6-")
+        self.assertEqual(sent[0]["If-range"], '"v1"')
+        with open(part) as f:
+            self.assertEqual(f.read(), "hello world")
+
+    def test_job_starts_over_when_the_server_ignores_the_range(self):
+        part = os.path.join(self.tmp, "f.part")
+        write_text(part, "stale")
+        ended, _, job = self.run_job(part, [(200, {"Content-Length": "11"}, b"hello world")])
+        self.assertEqual(ended, ("done", None))
+        self.assertIn("started again", job.note)
+        with open(part) as f:
+            self.assertEqual(f.read(), "hello world")
+
+    def test_job_from_nothing_and_short_answers(self):
+        part = os.path.join(self.tmp, "f.part")
+        ended, sent, _ = self.run_job(part, [(200, {"Content-Length": "20"}, b"only ten b")])
+        self.assertNotIn("Range", sent[0])
+        self.assertNotIn("If-range", sent[0], "If-Range only goes with a Range")
+        self.assertEqual(ended, ("failed", "the connection closed before the whole file arrived"))
+
+    def test_job_can_be_paused(self):
+        part = os.path.join(self.tmp, "f.part")
+        body = b"x" * (bb.DOWNLOAD_CHUNK_BYTES * 4)
+        ended, _, _ = self.run_job(part, [(200, {"Content-Length": str(len(body))}, body)],
+                                   stop_after=bb.DOWNLOAD_CHUNK_BYTES)
+        self.assertEqual(ended, ("paused", None))
+        self.assertLess(os.path.getsize(part), len(body))
+
+
+class WellbeingTests(TmpDirCase):
+    def tracker(self):
+        return bb.WellbeingTracker(os.path.join(self.tmp, "wellbeing.json"))
+
+    def test_site_groups_subdomains_and_ignores_non_web_pages(self):
+        self.assertEqual(bb.wellbeing_site("https://m.youtube.com/watch?v=1"), "youtube.com")
+        self.assertEqual(bb.wellbeing_site("https://www.bbc.co.uk/news"), "bbc.co.uk")
+        self.assertEqual(bb.wellbeing_site("http://127.0.0.1:8080/x"), "127.0.0.1")
+        self.assertEqual(bb.wellbeing_site("http://localhost:3000/"), "localhost")
+        for uri in ("about:blank", "arrow://times-up?t=x", "file:///home/a.html", "", None):
+            self.assertEqual(bb.wellbeing_site(uri), "", uri)
+        self.assertEqual(bb.wellbeing_site_from_input(" https://www.YouTube.com/feed "), "youtube.com")
+        self.assertEqual(bb.wellbeing_site_from_input("reddit.com"), "reddit.com")
+        self.assertEqual(bb.wellbeing_site_from_input("not a site"), "")
+
+    def test_bedtime_runs_past_midnight(self):
+        start, end = bb.parse_clock("23:00", "0:0"), bb.parse_clock("07:00", "0:0")
+        self.assertEqual((start, end), (23 * 60, 7 * 60))
+        self.assertTrue(bb.in_bedtime(23 * 60 + 30, start, end))
+        self.assertTrue(bb.in_bedtime(3 * 60, start, end))
+        self.assertFalse(bb.in_bedtime(7 * 60, start, end))
+        self.assertFalse(bb.in_bedtime(12 * 60, start, end))
+        self.assertTrue(bb.in_bedtime(21 * 60, 20 * 60, 22 * 60))
+        self.assertFalse(bb.in_bedtime(5, 60, 60), "same start and end means no bedtime")
+        self.assertEqual(bb.parse_clock("25:99", "23:00"), 23 * 60, "bad times fall back to the default")
+        evening = time.mktime((2026, 10, 8, 23, 30, 0, 0, 0, -1))
+        night = time.mktime((2026, 10, 9, 1, 0, 0, 0, 0, -1))
+        self.assertEqual(bb.bedtime_night(evening, start, end), bb.bedtime_night(night, start, end),
+                         "1 am belongs to the night that began at 11 pm")
+
+    def test_limits_extra_time_and_saving(self):
+        t, now = self.tracker(), time.time()
+        t.set_limit("youtube.com", 1)
+        t.add("youtube.com", 55, now)
+        self.assertFalse(t.over_limit("youtube.com", now))
+        t.add("youtube.com", 5, now)
+        self.assertTrue(t.over_limit("youtube.com", now))
+        self.assertFalse(t.over_limit("github.com", now), "sites without a limit are never over")
+        t.grant_extra("youtube.com", bb.WELLBEING_EXTRA_SECONDS, now)
+        self.assertFalse(t.over_limit("youtube.com", now))
+        self.assertTrue(t.over_limit("youtube.com", now + 86400) is False and t.used("youtube.com", now + 86400) == 0,
+                        "a new day starts from zero")
+        t.add("github.com", 30, now)
+        t.save()
+        again = self.tracker()
+        self.assertEqual(again.limits, {"youtube.com": 1})
+        self.assertEqual(again.used("youtube.com", now), 60)
+        self.assertEqual(again.totals(1, now), [("youtube.com", 60), ("github.com", 30)])
+        again.clear()
+        self.assertEqual(self.tracker().totals(7, now), [])
+        self.assertEqual(self.tracker().limits, {"youtube.com": 1}, "clearing screen time keeps the limits")
+
+    def test_old_days_are_dropped(self):
+        t, now = self.tracker(), time.time()
+        for back in range(20):
+            t.add("a.com", 10, now - back * 86400)
+        self.assertEqual(len(t.days), bb.WELLBEING_KEEP_DAYS)
+        self.assertEqual(t.totals(7, now), [("a.com", 70)])
+
+    def test_damaged_file_is_ignored(self):
+        path = os.path.join(self.tmp, "wellbeing.json")
+        write_text(path, "{not json")
+        self.assertEqual(self.tracker().limits, {})
+        write_json(path, {"days": {"2026-10-08": {"a.com": "x", "b.com": 5}}, "limits": {"a.com": True, "b.com": 20}})
+        t = self.tracker()
+        self.assertEqual(t.days, {"2026-10-08": {"b.com": 5.0}})
+        self.assertEqual(t.limits, {"b.com": 20})
+
+    def test_break_reminder_after_continuous_browsing(self):
+        t = self.tracker()
+
+        def browse(start, stop):  # one call every 5 seconds, like the window's tick
+            return [now for now in range(start, stop, 5) if t.break_due(now, 600)]
+
+        self.assertEqual(browse(0, 1300), [600, 1200], "every 10 minutes of browsing")
+        pause = bb.WELLBEING_BREAK_RESET_SECONDS + 5
+        self.assertEqual(browse(1300 + pause, 1300 + pause + 595), [], "a 5-minute pause starts the count again")
+        self.assertEqual(browse(1300 + pause + 595, 1300 + pause + 700), [1300 + pause + 600])
+
+if __name__ == "__main__":
+    unittest.main()
