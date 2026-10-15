@@ -58,6 +58,7 @@
 - **No empty ad boxes or cookie banners:** the spaces ads leave and "Accept cookies" pop-ups are hidden (EasyList Cookie List). Nothing is accepted for you.
 - **Pop-ups:** ad pop-ups never open, and other sites' pop-ups wait for your OK. Allow them for a site with one click, or under the 🔒 padlock.
 - **Privacy report** showing what was blocked.
+- **Scam warnings:** a page whose address copies a bank, payment or government site's (SBI, HDFC, Paytm, IRCTC, Aadhaar and more) is stopped before it opens, and Arrow warns when a page copies a command for you to paste into a Terminal, as fake "I'm not a robot" checks do. Both are checked on your computer.
 - **Every page runs in a sandbox**, so a hacked page can't reach your files.
 - **Files that can run programs** (`.sh`, `.AppImage`, `.deb`, `.exe`, …) **ask before downloading**.
 

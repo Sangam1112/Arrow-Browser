@@ -349,7 +349,7 @@ ICON_FOR_EMOJI = {
     "🍪": "cookie", "🎥": "video", "🗝": "book-key", "🔕": "bell-off", "🕘": "history", "🗑": "trash-2",
     "📤": "upload", "💾": "save", "♻": "rotate-ccw", "😴": "bed", "🪶": "feather", "📈": "memory-stick",
     "👋": "hand", "🔓": "unlock", "🔐": "badge-check", "📄": "file-text", "🗂": "archive", "⭐": "star",
-    "⚙": "settings", "ℹ": "info", "⚡": "gauge",
+    "⚙": "settings", "ℹ": "info", "⚡": "gauge", "🎣": "shield-alert", "📋": "clipboard-x",
 }
 # icon colours per interface theme: the accent's text tint, and a muted grey for unselected sidebar items
 ICON_COLORS = {"dark": {"accent": "#f6a77f", "muted": "#7c8798"}, "light": {"accent": "#c2410c", "muted": "#64748b"}}
@@ -2006,6 +2006,198 @@ def site_of(host):
     return ".".join(labels[-keep:])
 
 
+# ---------------------------------------------------------------------------
+# Scam warnings: look-alike addresses of banks and payment sites, and commands a page puts on the clipboard.
+# Everything is checked on this computer; no address is sent anywhere.
+# ---------------------------------------------------------------------------
+# (name, words in its addresses, official sites). A host on an official site, or under a suffix that only
+# verified banks or the government can register, is never flagged. The first official site is the one the
+# warning offers to open instead.
+LOOKALIKE_SITES = (
+    ("State Bank of India (SBI)", ("sbi", "onlinesbi", "yonosbi", "sbionline"),
+     ("sbi.co.in", "sbi", "onlinesbi.com", "sbicard.com", "sbilife.co.in", "sbimf.com", "sbigeneral.in",
+      "sbisecurities.in", "sbicaps.com", "sbisec.co.jp", "sbigroup.co.jp")),
+    ("HDFC Bank", ("hdfc", "hdfcbank"),
+     ("hdfcbank.com", "hdfc.com", "hdfcbank.net", "hdfclife.com", "hdfcergo.com", "hdfcfund.com", "hdfcsec.com",
+      "hdfcsky.com", "hdfccredila.com")),
+    ("ICICI Bank", ("icici", "icicibank"),
+     ("icicibank.com", "icicidirect.com", "iciciprulife.com", "icicilombard.com", "icicipruamc.com",
+      "icicisecurities.com")),
+    ("Axis Bank", ("axisbank",), ("axisbank.com", "axisbank.co.in", "axisdirect.in", "axismf.com")),
+    ("Kotak Mahindra Bank", ("kotak", "kotakbank"),
+     ("kotak.com", "kotakbank.com", "kotaksecurities.com", "kotakmf.com", "kotaklife.com", "kotak811.com")),
+    ("Punjab National Bank", ("pnb", "pnbindia"), ("pnbindia.in", "pnb.co.in", "pnbhousing.com", "pnbmetlife.com")),
+    ("Bank of Baroda", ("bankofbaroda",), ("bankofbaroda.in", "bankofbaroda.com", "bobfinancial.com")),
+    ("Canara Bank", ("canarabank",), ("canarabank.com", "canarabank.in")),
+    ("Union Bank of India", ("unionbankofindia",), ("unionbankofindia.co.in", "unionbankonline.co.in")),
+    ("Bank of India", ("bankofindia",), ("bankofindia.co.in", "bankofindia.com")),
+    ("Paytm", ("paytm",), ("paytm.com", "paytm.in", "paytmbank.com", "paytmmoney.com", "paytmmall.com")),
+    ("PhonePe", ("phonepe", "phonepay"), ("phonepe.com",)),
+    ("Google Pay", ("gpay", "googlepay"), ("pay.google.com", "google.com", "gpay.app")),
+    ("BHIM UPI (NPCI)", ("npci", "bhimupi"), ("npci.org.in", "bhimupi.org.in")),
+    ("IRCTC", ("irctc",), ("irctc.co.in", "irctc.com", "irctctourism.com")),
+    ("Aadhaar (UIDAI)", ("uidai", "aadhaar", "aadhar", "myaadhaar"), ("uidai.gov.in",)),
+    ("the Income Tax Department", ("incometax", "incometaxindia", "incometaxefiling"), ("incometax.gov.in",)),
+    ("EPFO", ("epfo", "epfindia"), ("epfindia.gov.in",)),
+    ("DigiLocker", ("digilocker",), ("digilocker.gov.in",)),
+    ("India Post", ("indiapost",), ("indiapost.gov.in",)),
+    ("LIC", ("licindia",), ("licindia.in",)),
+    ("Flipkart", ("flipkart",), ("flipkart.com", "flixcart.com")),
+)
+LOOKALIKE_TRUSTED_SUFFIXES = ("bank.in", "fin.in", "gov.in", "nic.in")
+# Words scam addresses add to a bank's name: "sbi-kyc-update", "hdfcnetbanking", "sbirewardz".
+LOOKALIKE_SCAM_WORDS = ("kyc", "update", "verif", "login", "signin", "secure", "netbank", "banking", "reward",
+                        "point", "bonus", "refund", "support", "care", "help", "customer", "account", "online",
+                        "offer", "cashback", "gift", "prize", "claim", "block", "alert", "redeem", "service",
+                        "active", "unlock", "limit", "card")
+LOOKALIKE_SCAM_WORDS_EXACT = ("pan", "otp", "app", "apk", "upi", "pay")
+# Letters from other alphabets (and digits) that look like Latin ones in an address bar.
+_CONFUSABLES = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x", "і": "i", "ј": "j", "ѕ": "s",
+    "һ": "h", "ԁ": "d", "ӏ": "l", "ԛ": "q", "ԝ": "w", "к": "k", "м": "m", "т": "t", "в": "b", "п": "n",
+    "ο": "o", "α": "a", "ν": "v", "ρ": "p", "ι": "i", "κ": "k", "τ": "t", "υ": "u", "χ": "x", "ε": "e",
+    "ı": "i", "ɡ": "g", "ɩ": "i", "ʟ": "l", "ɑ": "a", "0": "o", "3": "e", "5": "s",
+})
+_CONFUSABLE_SCRIPTS = ("CYRILLIC", "GREEK", "ARMENIAN", "CHEROKEE")
+
+
+def _official_lookalike_domains():
+    return {d for _name, _words, official in LOOKALIKE_SITES for d in official} | set(LOOKALIKE_TRUSTED_SUFFIXES)
+
+
+def _host_under(host, domain):
+    return host == domain or host.endswith("." + domain)
+
+
+def _letter_skeletons(word):
+    """`word` as it looks: accents dropped, look-alike letters made Latin, then "1" read as both "i" and "l",
+    "rn" as "m" and "vv" as "w"."""
+    import unicodedata
+    plain = "".join(c for c in unicodedata.normalize("NFKD", word) if not unicodedata.combining(c))
+    plain = plain.lower().translate(_CONFUSABLES)
+    shapes = {plain.replace("1", "i"), plain.replace("1", "l")}
+    return shapes | {s.replace("rn", "m").replace("vv", "w") for s in shapes}
+
+
+def _osa_distance(a, b, limit):
+    """Edits (insert, delete, change, swap two neighbours) between a and b; limit + 1 once it's over limit."""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    prev2, prev = None, list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        row = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = a[i - 1] != b[j - 1]
+            row[j] = min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                row[j] = min(row[j], prev2[j - 2] + 1)
+        if min(row) > limit:
+            return limit + 1
+        prev2, prev = prev, row
+    return prev[-1]
+
+
+def _decoded_labels(host):
+    labels = []
+    for label in host.split("."):
+        if label.startswith("xn--"):
+            try:
+                label = label.encode("ascii").decode("idna")
+            except (UnicodeError, ValueError):
+                pass
+        labels.append(label)
+    return labels
+
+
+def _mixes_scripts(label):
+    import unicodedata
+    scripts = set()
+    for c in label:
+        if c.isalpha():
+            try:
+                scripts.add(unicodedata.name(c).split()[0])
+            except ValueError:
+                pass
+    return "LATIN" in scripts and bool(scripts & set(_CONFUSABLE_SCRIPTS))
+
+
+def _scam_word(rest):
+    rest = rest.strip("-0123456789")
+    return bool(rest) and (rest in LOOKALIKE_SCAM_WORDS_EXACT or any(w in rest for w in LOOKALIKE_SCAM_WORDS))
+
+
+def lookalike_site(host):
+    """Whether `host` pretends to be one of LOOKALIKE_SITES. Returns {"kind": "brand", "name", "official"} for
+    a copy of a bank or payment site's address (sbi-kyc.in, hdfcbank.co, icic1bank.com, onlinesbi.sbi.evil.xyz,
+    аxisbank.com in Cyrillic), {"kind": "mixed", "shown"} for an address mixing Latin letters with look-alike
+    ones from another alphabet, or None."""
+    host = (host or "").lower().rstrip(".")
+    if not host or "." not in host or is_local_network_host(host):
+        return None
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return None
+    except ValueError:
+        pass
+    if any(_host_under(host, d) for d in _official_lookalike_domains()):
+        return None
+    labels = _decoded_labels(host)
+    words = set()
+    for label in labels[:-1]:  # the last label is the country or ".com", never the disguise
+        words.add(label.replace("-", ""))
+        words.update(t for t in label.split("-") if t)
+    for name, keywords, official in LOOKALIKE_SITES:
+        found = {"kind": "brand", "name": name, "official": official[0]}
+        for word in words:
+            for shape in _letter_skeletons(word):
+                for keyword in keywords:
+                    if shape == keyword:
+                        return found
+                    if len(keyword) >= 3 and ((shape.startswith(keyword) and _scam_word(shape[len(keyword):]))
+                                              or (shape.endswith(keyword) and _scam_word(shape[:-len(keyword)]))):
+                        return found
+                    limit = 2 if len(keyword) >= 9 else 1 if len(keyword) >= 6 else 0
+                    if limit and _osa_distance(shape, keyword, limit) <= limit:
+                        return found
+    if any(_mixes_scripts(label) for label in labels):
+        return {"kind": "mixed", "shown": ".".join(labels)}
+    return None
+
+
+# Commands that download and run a program, or that Windows scam pages ("press Win+R, Ctrl+V, Enter") use.
+_DOWNLOAD_AND_RUN = [re.compile(p, re.IGNORECASE) for p in (
+    r"\b(curl|wget)\b.*\|\s*(sudo\s+)?(env\s+)?(ba|z|da|k|fi|tc)?sh\b",
+    r"\b(curl|wget)\b.*\|\s*(sudo\s+)?(python[0-9.]*|perl|ruby|node|php)\b",
+    r"\b(ba|z|da)?sh\s+(-\w+\s+)*-c\s+[\"']?\s*\$\(\s*(curl|wget)\b",
+    r"\b((ba|z)?sh|source|\.)\s+<\(\s*(curl|wget)\b",
+    r"\b(curl|wget)\b[^\n]*(&&|;)\s*(sudo\s+)?(chmod\s+[+0-7a-z]*x|\./|(ba|z)?sh\s|python[0-9.]*\s)",
+    r"\bbase64\s+(-d|--decode|-D)\b.*\|\s*(sudo\s+)?(ba|z)?sh\b",
+    r"\beval\s*[\"'(]?\s*\$\(",
+    r"/dev/(tcp|udp)/",
+    r"\bnc(at)?\b[^\n]*\s-[ec]\s",
+    r"\bpython[0-9.]*\s+-c\s+[\"'].*(base64|urllib|socket|exec\s*\()",
+    r"\bosascript\s+-e\b",
+    r"\b(powershell|pwsh|mshta|cmd|rundll32|regsvr32|wscript|cscript|conhost|msiexec|certutil|bitsadmin)"
+    r"(\.exe)?\b.*(https?:|\\\\|\biex\b|invoke-expression|downloadstring|frombase64string|\s-e(nc\w*)?\s+[a-z0-9+/=]{16,}|-urlcache)",
+    r"\b(iwr|irm|invoke-webrequest|invoke-restmethod)\b.*\|\s*(iex|invoke-expression)\b",
+)]
+# Words a fake "I'm not a robot" page hides after the command, so the Run box or Terminal shows only them.
+_FAKE_CHECK_COMMENT = re.compile(r"(#|::|\brem\b|<#)[^\n]*\b(robot|captcha|human|verif\w*|cloudflare|ray\s*id|"
+                                 r"security\s+check|validation|confirm\w*)\b", re.IGNORECASE)
+
+
+def copied_command_risk(text):
+    """How risky a text a page put on the clipboard is to paste into a terminal: "scam" for a command hidden
+    behind an "I'm not a robot" comment or a run of spaces, "command" for one that downloads and runs a
+    program, None for anything else."""
+    text = (text or "")[:20000]
+    if not any(p.search(text) for p in _DOWNLOAD_AND_RUN):
+        return None
+    if _FAKE_CHECK_COMMENT.search(text) or re.search(r"[ \t  -​　]{25,}", text):
+        return "scam"
+    return "command"
+
+
 # Sign-in and payment windows ("Sign in with Google", "Pay with PayPal"). They report back to the page that
 # opened them, so they open without asking even though they are on another site.
 POPUP_SIGN_IN_DOMAINS = {
@@ -3497,6 +3689,20 @@ FAILED_LOADS_JS = r"""
 """
 FAILED_LOADS_WORLD = "arrow-blocked"
 
+# What the user has selected, in the page or in the text box they're in (the clipboard guard compares it with what
+# was copied). Runs in Arrow's own script world.
+COPIED_SELECTION_JS = r"""
+(function() {
+    let s = String(window.getSelection());
+    const a = document.activeElement;
+    try {
+        if (a && typeof a.value === 'string' && a.selectionEnd > a.selectionStart)
+            s += '\n' + a.value.slice(a.selectionStart, a.selectionEnd);
+    } catch (e) {}
+    return s;
+})()
+"""
+
 
 # Light theme (Settings → General → Browser theme). Layered over the dark app stylesheet at a
 # higher priority, so it only needs to change colours, and it can be added or removed while running.
@@ -3717,6 +3923,8 @@ class ArrowBrowserWindow(Gtk.Window):
         self.tracker_lists_enabled = saved_settings.get("tracker_lists_enabled", True)
         self.hide_cookie_banners = saved_settings.get("hide_cookie_banners", True)
         self.block_notification_requests = saved_settings.get("block_notification_requests", False)
+        self.lookalike_warning_enabled = saved_settings.get("lookalike_warning_enabled", True)
+        self.clipboard_guard_enabled = saved_settings.get("clipboard_guard_enabled", True)
         self.passwords_enabled = saved_settings.get("passwords_enabled", True)
         self.wellbeing_enabled = saved_settings.get("wellbeing_enabled", False)
         self.break_reminders_enabled = saved_settings.get("break_reminders_enabled", True)
@@ -3733,6 +3941,9 @@ class ArrowBrowserWindow(Gtk.Window):
         self._closed_tabs = []
         self._http_allowed_hosts = set()
         self._http_tokens = {}
+        self._lookalike_tokens = {}
+        self._user_copy_at = -1e9  # when the user last pressed Ctrl+C or picked Copy, for the clipboard guard
+        self._clipboard_warned_text = None
         self._recent_https_upgrades = {}
         self._fill_offered = set()
         self._infobar = None
@@ -4206,6 +4417,8 @@ class ArrowBrowserWindow(Gtk.Window):
 
         # Keybindings (Ctrl+T, Ctrl+W, Ctrl+R)
         self.connect("key-press-event", self.on_key_press)
+        self._clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        self._clipboard_handler = self._clipboard.connect("owner-change", self._on_clipboard_owner_change)
         self.connect("destroy", self.on_window_destroy)
 
         # Trigger Git Update Check after 30 sec (only the main window checks;
@@ -5322,12 +5535,25 @@ class ArrowBrowserWindow(Gtk.Window):
                 elif item.get_stock_action() == WebKit2.ContextMenuAction.COPY_LINK_TO_CLIPBOARD and web_link:
                     menu.insert(entry("arrow-copy-clean-link", "Copy _Clean Link (without tracking tags)",
                                       lambda: self.copy_clean_link(uri)), index + 1)
+        for index, item in enumerate(menu.get_items()):
+            # WebKit's own Copy and Cut don't say when they're picked; these do the same and tell the clipboard
+            # guard that the user copied the text themselves.
+            for stock, name, label, command in (
+                    (WebKit2.ContextMenuAction.COPY, "arrow-copy", "_Copy", WebKit2.EDITING_COMMAND_COPY),
+                    (WebKit2.ContextMenuAction.CUT, "arrow-cut", "Cu_t", WebKit2.EDITING_COMMAND_CUT)):
+                if item.get_stock_action() == stock:
+                    menu.remove(item)
+                    menu.insert(entry(name, label, lambda c=command: self._user_copy(webview, c)), index)
         if hit.context_is_selection() and not hit.context_is_editable():
             engine = self.search_engine if self.search_engine in self.search_engine_templates() else DEFAULT_SEARCH_ENGINE
             menu.append(WebKit2.ContextMenuItem.new_separator())
             menu.append(entry("arrow-search-selection", f"_Search {engine} for the Selected Text",
                               lambda: self.search_selection(webview)))
         return False
+
+    def _user_copy(self, webview, command):
+        self._user_copy_at = time.monotonic()
+        webview.execute_editing_command(command)
 
     def copy_clean_link(self, uri):
         url_rules = load_url_rules_cache(block=False)[0] if self.tracker_lists_enabled else ()
@@ -5525,6 +5751,9 @@ class ArrowBrowserWindow(Gtk.Window):
         if handler is not None:
             self._memory_monitor.disconnect(handler)
             self._memory_warning_handler = None
+        if getattr(self, "_clipboard_handler", None) is not None:
+            self._clipboard.disconnect(self._clipboard_handler)
+            self._clipboard_handler = None
         if wellbeing_tracker().dirty:
             wellbeing_tracker().save()
         _LIVE_WINDOW_COUNT -= 1
@@ -6193,6 +6422,9 @@ class ArrowBrowserWindow(Gtk.Window):
         ctrl = event.state & Gdk.ModifierType.CONTROL_MASK
         shift = event.state & Gdk.ModifierType.SHIFT_MASK
         alt = event.state & Gdk.ModifierType.MOD1_MASK
+        if ((ctrl and event.keyval in (Gdk.KEY_c, Gdk.KEY_C, Gdk.KEY_x, Gdk.KEY_X, Gdk.KEY_Insert))
+                or (shift and event.keyval == Gdk.KEY_Delete)):
+            self._user_copy_at = time.monotonic()  # a page can't fake this key press
         if ctrl and shift and event.keyval in (Gdk.KEY_t, Gdk.KEY_T):
             self.reopen_closed_tab()
             return True
@@ -7527,6 +7759,9 @@ class ArrowBrowserWindow(Gtk.Window):
             host = site_host_of(webview.get_uri())
             if host:
                 self._apply_site_policy(webview, host)
+            # A redirect counts too: a short link can lead to a fake bank page.
+            if host and self._stop_lookalike(webview, webview.get_uri() or ""):
+                return
         if load_event == WebKit2.LoadEvent.STARTED:
             if self._infobar is not None and getattr(self._infobar, "_arrow_fill_for", None) is webview:
                 self._clear_infobar()
@@ -7623,6 +7858,8 @@ class ArrowBrowserWindow(Gtk.Window):
             "tracker_lists_enabled": self.tracker_lists_enabled,
             "hide_cookie_banners": self.hide_cookie_banners,
             "block_notification_requests": self.block_notification_requests,
+            "lookalike_warning_enabled": self.lookalike_warning_enabled,
+            "clipboard_guard_enabled": self.clipboard_guard_enabled,
             "passwords_enabled": self.passwords_enabled,
             "wellbeing_enabled": self.wellbeing_enabled,
             "break_reminders_enabled": self.break_reminders_enabled,
@@ -8439,6 +8676,19 @@ class ArrowBrowserWindow(Gtk.Window):
         )
 
         self._settings_section(
+            priv, "SCAM WARNINGS",
+            switch("lookalike_warning_enabled", "🎣", "Warn about fake bank and payment sites",
+                   "Stops a page whose address copies SBI, HDFC, ICICI, Paytm, PhonePe, IRCTC, Aadhaar, Income Tax "
+                   "or another official site's, or mixes in look-alike letters from other alphabets. "
+                   "Checked on this computer; addresses aren't sent anywhere.",
+                   store("lookalike_warning_enabled")),
+            switch("clipboard_guard_enabled", "📋", "Warn when a page copies a command",
+                   "Fake \"I'm not a robot\" pages copy a command and ask you to paste it into a Terminal. "
+                   "Arrow warns when a page copies one that downloads and runs a program, and offers to remove it.",
+                   store("clipboard_guard_enabled")),
+        )
+
+        self._settings_section(
             priv, "BLOCK LISTS",
             switch("tracker_lists_enabled", "🔄", "Keep the block lists up to date",
                    "About once a week, downloads the ad, tracker and cookie-banner lists (easylist.to, "
@@ -9012,6 +9262,15 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             if target.startswith("http://") and host:
                 self._http_allowed_hosts.add(host)
                 page = f"<html><head><meta http-equiv='refresh' content='0;url={html_module.escape(target, quote=True)}'></head></html>"
+        elif parsed.netloc == "allow-site":
+            # Continue past the look-alike warning; same one-time token as allow-http.
+            token = (urllib.parse.parse_qs(parsed.query).get("t") or [""])[0]
+            target = self._lookalike_tokens.pop(token, "")
+            host = site_host_of(target)
+            if target.startswith(("http://", "https://")) and host:
+                set_site_value(self.site_settings, host, "lookalike_ok", True)
+                self._save_site_settings()
+                page = f"<html><head><meta http-equiv='refresh' content='0;url={html_module.escape(target, quote=True)}'></head></html>"
         elif parsed.netloc == "times-up":
             token = (urllib.parse.parse_qs(parsed.query).get("t") or [""])[0]
             page = self._times_up_page(token) or page
@@ -9045,6 +9304,139 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         page = build_notice_page("🔓", "Secure connection unavailable", body, actions, error_message)
         GLib.idle_add(lambda: webview.load_html(with_ui_font(page), failing_uri))
         self.statusbar.push(self.context_id, f"🔓 {host} didn't answer over HTTPS")
+
+    # ------------------------------------------------------------------
+    # Scam warnings: look-alike bank addresses, commands a page copies
+    # ------------------------------------------------------------------
+    def _stop_lookalike(self, webview, uri):
+        """Stops a page whose address copies a bank or payment site's (lookalike_site()) before it shows,
+        and shows a warning in its place. True when it did."""
+        if not self.lookalike_warning_enabled or not uri.startswith(("http://", "https://")):
+            return False
+        if getattr(webview, "_arrow_lookalike_page", None) == uri:
+            webview._arrow_lookalike_page = None  # the warning itself, shown at the same address
+            return False
+        host = site_host_of(uri)
+        if self.site_settings.get(host, {}).get("lookalike_ok"):
+            return False
+        match = lookalike_site(host)
+        if match is None:
+            return False
+        page = self._lookalike_warning_page(uri, host, match)
+        webview._arrow_lookalike_page = uri
+        webview.stop_loading()
+        GLib.idle_add(lambda: (webview.load_html(with_ui_font(page), uri), False)[1])
+        self.statusbar.push(self.context_id, f"⚠️ Stopped {host}: it may be a fake site")
+        return True
+
+    def _lookalike_warning_page(self, uri, host, match):
+        token = secrets_module.token_urlsafe(12)
+        self._lookalike_tokens[token] = uri
+        if len(self._lookalike_tokens) > 50:
+            self._lookalike_tokens.pop(next(iter(self._lookalike_tokens)))
+        esc = html_module.escape
+        go_on = f'<a class="btn alt" href="arrow://allow-site?t={token}">Open {esc(host)} anyway</a>'
+        if match["kind"] == "brand":
+            name, official = esc(match["name"]), esc(match["official"])
+            body = (f"<p><b>{esc(host)}</b> looks like an address of <b>{name}</b>, but it isn't one of "
+                    f"{name}'s sites.</p>"
+                    "<p style='color:#fca5a5'>Fake bank, payment and government pages copy the real ones to steal "
+                    "passwords, OTPs, card and Aadhaar details. Don't enter anything here.</p>"
+                    f"<p>{name}'s real site is <b>{official}</b>. If a message or call sent you here, it's a scam.</p>")
+            actions = f'<a class="btn" href="https://{official}/">Go to {official}</a>' + go_on
+            return build_notice_page("🎣", "This may be a fake site", body, actions)
+        body = (f"<p>This address, <b>{esc(match['shown'])}</b> (<code>{esc(host)}</code>), mixes Latin letters "
+                "with look-alike letters from another alphabet, so it can pass for a different site's address.</p>"
+                "<p style='color:#fca5a5'>Scam sites use this trick. Don't sign in or pay here unless you're sure "
+                "who runs it.</p>")
+        return build_notice_page("🎣", "This address uses look-alike letters", body, go_on)
+
+    CLIPBOARD_USER_COPY_SECONDS = 2.0
+    CLIPBOARD_PREVIEW_CHARS = 400
+
+    def _on_clipboard_owner_change(self, clipboard, _event):
+        """Something new was copied. When the page in front put it there (not the user's own Ctrl+C or Copy of
+        text they selected) and it's a command that downloads and runs a program, warn: fake "I'm not a robot"
+        pages copy one and ask you to paste it into a Terminal (ClickFix)."""
+        if not self.clipboard_guard_enabled or getattr(self, "_window_released", False) or not self.is_active():
+            return
+        webview = self.get_active_webview()
+        if webview is None or self.get_focus() is not webview:
+            return  # copied in the address bar, a dialog or another app
+        host = site_host_of(webview.get_uri())
+        if not host or self.site_settings.get(host, {}).get("clipboard_ok"):
+            return
+        user_copy = time.monotonic() - self._user_copy_at < self.CLIPBOARD_USER_COPY_SECONDS
+        clipboard.request_text(lambda _c, text: self._check_copied_text(webview, host, text, user_copy))
+
+    def _check_copied_text(self, webview, host, text, user_copy):
+        risk = copied_command_risk(text)
+        if risk is None or text == self._clipboard_warned_text:
+            return
+        if not user_copy:
+            self._warn_copied_command(host, text, risk)
+            return
+
+        # The user copied, but a page can swap what lands on the clipboard: it's theirs only if it's what they
+        # selected. Read in Arrow's own script world, where the page can't change what getSelection() returns.
+        def got(view, result, _data):
+            try:
+                selected = view.evaluate_javascript_finish(result).to_string()
+            except GLib.Error:
+                selected = ""
+            if " ".join(text.split()) not in " ".join(selected.split()):
+                self._warn_copied_command(host, text, risk)
+
+        webview.evaluate_javascript(COPIED_SELECTION_JS, -1, "arrow-clip", None, None, got, None)
+
+    def _warn_copied_command(self, host, text, risk):
+        if self._clipboard.wait_for_text() != text:
+            return  # replaced since
+        self._clipboard_warned_text = text
+        esc = GLib.markup_escape_text
+        scam = risk == "scam"
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, destroy_with_parent=True,
+                                   message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.NONE,
+                                   text="This page copied a hidden command. It's likely a scam."
+                                   if scam else "This page copied a command")
+        dialog.get_style_context().add_class("arrow-dialog")
+        if scam:
+            secondary = (f"<b>{esc(host)}</b> put a command on your clipboard and hid it behind other words. "
+                         "Fake \"I'm not a robot\" and \"fix this error\" pages ask you to paste it into a Terminal "
+                         "or the Run box. Running it can give them your computer, passwords and money. "
+                         "<b>No real website asks you to do this.</b>")
+        else:
+            secondary = (f"<b>{esc(host)}</b> put a command that downloads and runs a program on your clipboard. "
+                         "Only run it if you meant to copy it and you trust this site. Scam pages ask you to paste "
+                         "commands like this into a Terminal to \"verify\" you or \"fix\" an error.")
+        dialog.format_secondary_markup(secondary)
+        # Spaces and line breaks can hide the part that matters; show it all.
+        shown = re.sub(r"[ \t  -​　]{5,}", " ⋯ ", text.replace("\n", " ⏎ "))
+        if len(shown) > self.CLIPBOARD_PREVIEW_CHARS:
+            shown = shown[:self.CLIPBOARD_PREVIEW_CHARS] + "…"
+        preview = Gtk.Label(xalign=0.0, selectable=False)
+        preview.set_markup(f"<tt>{esc(shown)}</tt>")
+        preview.set_line_wrap(True)
+        preview.set_line_wrap_mode(Pango.WrapMode.CHAR)
+        area = dialog.get_message_area()
+        area.pack_start(preview, False, False, 0)
+        trust = None
+        if not scam:
+            trust = Gtk.CheckButton(label=f"Don't warn me about commands from {host} again")
+            area.pack_start(trust, False, False, 0)
+        dialog.add_button("Keep it copied", Gtk.ResponseType.REJECT)
+        remove = dialog.add_button("Remove it from the clipboard", Gtk.ResponseType.ACCEPT)
+        remove.get_style_context().add_class("settings-primary-btn")
+        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+        area.show_all()
+        response = dialog.run()
+        if trust is not None and trust.get_active():
+            set_site_value(self.site_settings, host, "clipboard_ok", True)
+            self._save_site_settings()
+        dialog.destroy()
+        if response != Gtk.ResponseType.REJECT and self._clipboard.wait_for_text() == text:
+            self._clipboard.set_text("", -1)
+            self.statusbar.push(self.context_id, "🧹 Removed the command from the clipboard")
 
     # ------------------------------------------------------------------
     # Tabs: pinning, context menu, reopen closed tab
@@ -10526,6 +10918,10 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             parts.append("no password prompts")
         if entry.get("popups") is True:
             parts.append("pop-ups allowed")
+        if entry.get("lookalike_ok") is True:
+            parts.append("opened despite the fake-site warning")
+        if entry.get("clipboard_ok") is True:
+            parts.append("no warning when it copies a command")
         return ", ".join(parts) or "default settings"
 
     def set_search_engine(self, name):

