@@ -4,6 +4,14 @@ All notable changes to Arrow Browser. Versions follow `MAJOR.MINOR.PATCH`.
 Releases are signed; the in-app updater only installs a release whose signature verifies.
 Notes from before 1.0.0 (Bharat Browser, and Arrow up to 1.6.9 in the old repository) are in [docs/HISTORY.md](docs/HISTORY.md).
 
+## [1.0.1] - 2026-10-15
+
+### Fixed
+- **On a fresh Fedora, Arrow didn't start.** Its interface library needs a small GNOME component (`gobject-introspection`) that a full Fedora desktop usually has but a leaner install doesn't, and the `.rpm` didn't ask for it. It does now, so `dnf install` brings it along. Ubuntu, Debian and Mint weren't affected.
+
+### Changed
+- **Every release is now installed and started on fresh Ubuntu 24.04, Ubuntu 22.04 (the base of Linux Mint 21), Debian 12 and Fedora** before anyone else gets it: the test checks that a page loads, Settings opens, and the font and icons work.
+
 ## [1.0.0] - 2026-10-15
 
 A fresh start: Arrow Browser has a new home at https://github.com/Sangam1112/Arrow-Browser, and its version numbers start again at 1.0.0.

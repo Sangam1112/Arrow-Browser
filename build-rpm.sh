@@ -78,6 +78,8 @@ python3 -m py_compile /usr/share/arrow-browser/arrow_browser.py >/dev/null 2>&1 
 if [ \$1 -eq 0 ]; then rm -rf /usr/share/arrow-browser/__pycache__; fi
 
 %changelog
+* Thu Oct 15 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.1-1
+- Fedora: Arrow didn't start on a fresh install
 * Thu Oct 15 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.0-1
 - Arrow Browser 1.0.0: new home at github.com/Sangam1112/Arrow-Browser, Lexend font, new look, Settings search
 EOF
