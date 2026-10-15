@@ -206,7 +206,10 @@ No telemetry, analytics or accounts. Apart from the sites you visit, Arrow conne
 | Update check | `api.github.com`, `raw.githubusercontent.com` | At startup and when you click *Check for updates* | Always on |
 | Ad and tracker lists | `easylist.to` | About once a week | Settings → Privacy & Security → *Keep the block lists up to date* |
 | Link-cleaning rules | `rules2.clearurls.xyz` (fallback `gitlab.com`) | About once a week | Same switch |
+| Cookie-banner list | `secure.fanboy.co.nz` | About once a week | Same switch |
 | Link prefetch | links you hover over | While browsing | Always on, except in private windows |
+
+**Arrow collects no personal data.** There are no Arrow servers, accounts, telemetry or analytics, so nothing about you or your browsing ever reaches the developer. That's why there's no privacy policy to accept and nothing to request or delete under laws like the GDPR or India's DPDP Act.
 
 Your data stays in `~/.config/arrow-browser` and `~/.cache/arrow-browser`, and passwords in your keyring. Private windows save nothing.
 
