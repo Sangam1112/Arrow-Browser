@@ -8344,8 +8344,8 @@ class ArrowBrowserWindow(Gtk.Window):
 
         # --- Privacy & Security ---------------------------------------------
         priv = add_page("privacy", "🛡️  Privacy & Security", "Privacy & Security",
-                        "Protection is on from the first launch. Use the 🔒 icon in the address bar "
-                        "to change these for a single site.")
+                        "Arrow collects no personal data, and protection is on from the first launch. "
+                        "Use the 🔒 icon in the address bar to change these for a single site.")
 
         tracker_row = self._settings_button_row("🛰️", "Block lists", self._tracker_status_text(),
                                                 "Update now", lambda: None)
@@ -8366,23 +8366,36 @@ class ArrowBrowserWindow(Gtk.Window):
         btn_tracker_update.set_sensitive(not self.is_private)
 
         self._settings_section(
-            priv, "TRACKING PROTECTION",
+            priv, "YOUR DATA",
+            self._settings_row("🔐", "Arrow collects nothing about you",
+                               "No accounts, telemetry or analytics. History, bookmarks, cookies and settings stay "
+                               "on this computer, and saved passwords in your system keyring."),
+            self._settings_button_row("📊", "Privacy report", "What Arrow has blocked and upgraded for you.",
+                                      "Open", lambda: close_then(self.open_privacy_report)),
+        )
+
+        self._settings_section(
+            priv, "BLOCKING",
             switch("adblock_enabled", "🛡️", "Block ads and trackers",
                    "Stops known ad and tracking servers on every site. Sign-in pages and captchas keep working.",
                    store("adblock_enabled")),
-            switch("tracker_lists_enabled", "🔄", "Keep the block lists up to date",
-                   "About once a week, downloads EasyList (ads) and EasyPrivacy (trackers) from easylist.to and "
-                   "the ClearURLs link-cleaning rules from clearurls.xyz.",
-                   self.on_tracker_lists_toggled),
-            tracker_row,
             switch("hide_cookie_banners", "🍪", "Hide cookie banners",
-                   "Hides \"Accept cookies\" pop-ups and bars using the EasyList Cookie List. Nothing is accepted "
-                   "for you. Turn off if a site's page stops scrolling.",
+                   "Hides \"Accept cookies\" pop-ups and bars. Nothing is accepted for you. "
+                   "Turn off if a site's page stops scrolling.",
                    self.on_hide_cookie_banners_toggled),
             switch("clearurls_enabled", "🔗", "Remove tracking tags from links",
-                   "Strips utm_*, fbclid, gclid and hundreds of site-specific tags from addresses before they "
-                   "load, and skips tracking redirects such as google.com/url?q=.",
+                   "Strips utm_*, fbclid, gclid and hundreds of other tags from addresses before they load, "
+                   "and skips tracking redirects such as google.com/url?q=.",
                    store("clearurls_enabled")),
+        )
+
+        self._settings_section(
+            priv, "BLOCK LISTS",
+            switch("tracker_lists_enabled", "🔄", "Keep the block lists up to date",
+                   "About once a week, downloads the ad, tracker and cookie-banner lists (easylist.to, "
+                   "fanboy.co.nz) and the link-cleaning rules (clearurls.xyz).",
+                   self.on_tracker_lists_toggled),
+            tracker_row,
         )
 
         self._settings_section(
@@ -8393,6 +8406,10 @@ class ArrowBrowserWindow(Gtk.Window):
             switch("webrtc_enabled", "🎥", "Allow camera, microphone and WebRTC",
                    "Off by default: WebRTC can reveal your real IP address, even behind a VPN. Turn on for video calls.",
                    self.on_webrtc_toggled),
+            self._settings_row("📡", "Other connections",
+                               "Besides the sites you visit and the block lists, Arrow only checks GitHub for "
+                               "updates at startup, and connects to a link's site when you point at it so it opens "
+                               "faster (not in private windows)."),
         )
 
         self._settings_section(
@@ -8413,8 +8430,6 @@ class ArrowBrowserWindow(Gtk.Window):
             self._settings_button_row("🌐", "Site settings and permissions",
                                       "Camera, location, notifications, JavaScript, ads and zoom you've set per site.",
                                       "Manage…", lambda: self.open_site_settings_manager(dialog)),
-            self._settings_button_row("📊", "Privacy report", "What the browser has blocked and upgraded for you.",
-                                      "Open", lambda: close_then(self.open_privacy_report)),
         )
 
         # --- History & Data ---------------------------------------------------
