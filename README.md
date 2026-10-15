@@ -187,10 +187,6 @@ rm -rf ~/.local/share/arrow-browser ~/.local/bin/arrow-browser \
 rm -rf ~/.config/arrow-browser ~/.cache/arrow-browser
 ```
 
-Saved passwords live in your system keyring: delete them first in **Settings → Privacy & Security → Saved passwords**.
-
-> **Had Arrow before 1.0.0?** Copies from the old repository (1.6.9 and earlier) won't find new releases, so install the 1.0.0 package once. Your bookmarks, history, passwords and settings stay, and Arrow updates itself from then on. Older release notes are in [docs/HISTORY.md](docs/HISTORY.md).
-
 ---
 
 ## 🧭 Keyboard shortcuts
