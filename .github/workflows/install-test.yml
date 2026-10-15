@@ -1,0 +1,73 @@
+# Install a published release on fresh systems and start it once (tools/smoke-test.py), so a package that's
+# missing a dependency or breaks on another distribution shows up before users find it.
+# Runs for every published release, or by hand: Actions → Install test → Run workflow (empty = latest release).
+name: Install test
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release to test, e.g. 1.0.0 (empty: the latest release)"
+        required: false
+
+jobs:
+  install:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:24.04
+            kind: deb
+          - image: ubuntu:22.04   # Linux Mint 21 is built on it
+            kind: deb
+          - image: debian:12
+            kind: deb
+          - image: fedora:latest
+            kind: rpm
+    container:
+      image: ${{ matrix.image }}
+      options: --privileged   # the web process sandbox needs user namespaces
+    env:
+      REPO: ${{ github.repository }}
+      WANT: ${{ github.event.release.tag_name || inputs.version }}
+    steps:
+      - name: Tools for the test (not Arrow's own dependencies)
+        run: |
+          if [ "${{ matrix.kind }}" = deb ]; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates xvfb xauth dbus
+          else
+            dnf install -y curl xorg-x11-server-Xvfb xauth dbus-daemon
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Download the release package
+        run: |
+          V="${WANT#v}"
+          if [ -z "$V" ]; then
+            V="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"
+          fi
+          echo "Testing Arrow $V"
+          if [ "${{ matrix.kind }}" = deb ]; then F="arrow-browser_${V}-1_all.deb"; else F="arrow-browser-${V}-1.noarch.rpm"; fi
+          curl -fsSLO "https://github.com/$REPO/releases/download/v$V/$F"
+          echo "PKG=$PWD/$F" >> "$GITHUB_ENV"
+
+      - name: Install it the way the README says
+        run: |
+          if [ "${{ matrix.kind }}" = deb ]; then
+            DEBIAN_FRONTEND=noninteractive apt-get install -y "$PKG"
+          else
+            dnf install -y "$PKG"
+          fi
+          command -v arrow-browser
+
+      - name: Start it as a normal user
+        run: |
+          useradd -m tester
+          cp tools/smoke-test.py /home/tester/ && chown tester /home/tester/smoke-test.py
+          su tester -c "cd ~ && dbus-run-session -- xvfb-run -a python3 smoke-test.py"
