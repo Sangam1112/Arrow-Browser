@@ -60,6 +60,7 @@
 - **Privacy report** showing what was blocked.
 - **Scam warnings:** a page whose address copies a bank, payment or government site's (SBI, HDFC, Paytm, IRCTC, Aadhaar and more) is stopped before it opens, and Arrow warns when a page copies a command for you to paste into a Terminal, as fake "I'm not a robot" checks do. Both are checked on your computer.
 - **Every page runs in a sandbox**, so a hacked page can't reach your files.
+- **Skip YouTube sponsors** (off by default): jumps over paid promotions and subscribe reminders marked by [SponsorBlock](https://sponsor.ajay.app)'s users, without telling SponsorBlock which video you watch.
 - **Files that can run programs** (`.sh`, `.AppImage`, `.deb`, `.exe`, …) **ask before downloading**.
 
 **Everyday use**
@@ -221,6 +222,7 @@ Besides the sites you visit, Arrow makes only these connections. Each server see
 | Ad and tracker block lists | `easylist.to` | About once a week | Yes: Settings → Privacy & Security → *Keep the block lists up to date* |
 | Cookie-banner list | `secure.fanboy.co.nz` | About once a week | Yes, same switch |
 | Link-cleaning rules | `rules2.clearurls.xyz` (backup: `gitlab.com`) | About once a week | Yes, same switch |
+| Sponsor segments of YouTube videos you play (only 4 characters of a scrambled video ID are sent, which match dozens of videos) | `sponsor.ajay.app` | When a video starts | Off unless you turn on Settings → Privacy & Security → *Skip sponsors in YouTube videos* |
 | Faster page opening (looks up and connects only; the page isn't loaded) | The address you type, or the site of a link you point at | While browsing | Only in private windows |
 
 ### Privacy laws

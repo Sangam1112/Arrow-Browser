@@ -349,7 +349,7 @@ ICON_FOR_EMOJI = {
     "🍪": "cookie", "🎥": "video", "🗝": "book-key", "🔕": "bell-off", "🕘": "history", "🗑": "trash-2",
     "📤": "upload", "💾": "save", "♻": "rotate-ccw", "😴": "bed", "🪶": "feather", "📈": "memory-stick",
     "👋": "hand", "🔓": "unlock", "🔐": "badge-check", "📄": "file-text", "🗂": "archive", "⭐": "star",
-    "⚙": "settings", "ℹ": "info", "⚡": "gauge", "🎣": "shield-alert", "📋": "clipboard-x",
+    "⚙": "settings", "ℹ": "info", "⚡": "gauge", "🎣": "shield-alert", "📋": "clipboard-x", "⏭": "skip-forward",
 }
 # icon colours per interface theme: the accent's text tint, and a muted grey for unselected sidebar items
 ICON_COLORS = {"dark": {"accent": "#f6a77f", "muted": "#7c8798"}, "light": {"accent": "#c2410c", "muted": "#64748b"}}
@@ -2500,6 +2500,81 @@ def _download_capped(url, max_bytes, timeout, agent):
     return raw
 
 
+# ---------------------------------------------------------------------------
+# SponsorBlock (Settings → Privacy & Security, off by default): skips the sponsor segments of YouTube videos that
+# SponsorBlock's users marked (sponsor.ajay.app, data CC BY-NC-SA 4.0). Only the first 4 characters of the video
+# ID's SHA-256 are sent; the answer covers dozens of videos and the right one is picked here.
+# ---------------------------------------------------------------------------
+SPONSORBLOCK_API = "https://sponsor.ajay.app/api/skipSegments/"
+# category -> how the status bar names a skipped one
+SPONSORBLOCK_CATEGORIES = {"sponsor": "sponsor", "selfpromo": "self-promotion", "interaction": "subscribe reminder"}
+SPONSORBLOCK_HOSTS = ("youtube.com", "www.youtube.com", "m.youtube.com")
+SPONSORBLOCK_MAX_BYTES = 2 * 1024 * 1024
+_YOUTUBE_VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+
+
+def youtube_video_id(uri):
+    """The video ID of a YouTube watch, Shorts or live address, or ""."""
+    try:
+        parsed = urllib.parse.urlparse(uri or "")
+    except ValueError:
+        return ""
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() not in SPONSORBLOCK_HOSTS:
+        return ""
+    match = re.match(r"/(?:shorts|live)/([A-Za-z0-9_-]{11})(?:/|$)", parsed.path)
+    if match:
+        return match.group(1)
+    if parsed.path == "/watch":
+        video = (urllib.parse.parse_qs(parsed.query).get("v") or [""])[0]
+        return video if _YOUTUBE_VIDEO_ID.fullmatch(video) else ""
+    return ""
+
+
+def sponsorblock_prefix(video_id):
+    return hashlib.sha256(video_id.encode("utf-8")).hexdigest()[:4]
+
+
+def parse_sponsorblock(raw):
+    """{video ID: [[start, end, category], ...]} from a skipSegments answer: skip segments of the categories in
+    SPONSORBLOCK_CATEGORIES, at least a second long, in order."""
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    found = {}
+    for video in data if isinstance(data, list) else []:
+        if not isinstance(video, dict) or not isinstance(video.get("videoID"), str):
+            continue
+        segments = []
+        for segment in video.get("segments") or []:
+            try:
+                start, end = (float(x) for x in segment["segment"])
+                category = segment["category"]
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (category in SPONSORBLOCK_CATEGORIES and segment.get("actionType", "skip") == "skip"
+                    and 0 <= start and end - start >= 1):
+                segments.append([round(start, 3), round(end, 3), category])
+        found[video["videoID"]] = sorted(segments)
+    return found
+
+
+def fetch_sponsor_segments(video_id, timeout=10):
+    """Asks SponsorBlock about the videos whose ID hashes to the same 4 characters as `video_id`. Returns
+    parse_sponsorblock()'s answer, always with an entry for `video_id` ([] when it has none). Raises on network
+    errors."""
+    query = urllib.parse.urlencode({"categories": json.dumps(sorted(SPONSORBLOCK_CATEGORIES))})
+    url = f"{SPONSORBLOCK_API}{sponsorblock_prefix(video_id)}?{query}"
+    try:
+        found = parse_sponsorblock(_download_capped(url, SPONSORBLOCK_MAX_BYTES, timeout, "ArrowBrowser-sponsorblock"))
+    except urllib.error.HTTPError as e:
+        if e.code != 404:  # 404: no video with this prefix has segments
+            raise
+        found = {}
+    found.setdefault(video_id, [])
+    return found
+
+
 def _drop_covered_subdomains(domains):
     """Each rule also blocks subdomains, so a.tracker.com is redundant when tracker.com is listed."""
     return {d for d in domains if not _host_matches_domain_set(d.split(".", 1)[1], domains)}
@@ -3689,6 +3764,63 @@ FAILED_LOADS_JS = r"""
 """
 FAILED_LOADS_WORLD = "arrow-blocked"
 
+# SponsorBlock's part in YouTube pages, in Arrow's own script world. It asks Arrow for the playing video's segments
+# (Arrow fetches them: the page's security rules would block the request, and YouTube would see it), then skips
+# each one once. Nothing runs while no video plays: media events don't bubble, but a capture listener on the
+# document sees every <video>'s 'play', including the ones YouTube adds later.
+SPONSORBLOCK_JS = r"""
+(function() {
+    if (window.__arrowSB) return;
+    const st = window.__arrowSB = { video: '', segs: [], done: new Set(), asked: '' };
+    function videoId() {
+        const m = location.pathname.match(/^\/(?:shorts|live)\/([A-Za-z0-9_-]{11})(?:\/|$)/);
+        if (m) return m[1];
+        const v = location.pathname === '/watch' ? new URLSearchParams(location.search).get('v') : '';
+        return v && /^[A-Za-z0-9_-]{11}$/.test(v) ? v : '';
+    }
+    function post(message) {
+        message.url = location.href;
+        try { window.webkit.messageHandlers.arrowSB.postMessage(message); } catch (e) {}
+    }
+    function ask() {
+        const id = videoId();
+        if (id && st.asked !== id) { st.asked = id; post({ video: id }); }
+        return id;
+    }
+    st.set = function(video, segs) {
+        if (video !== videoId()) return;  // the user has moved on to another video
+        st.video = video; st.segs = segs; st.done = new Set();
+    };
+    st.clear = function() { st.video = ''; st.segs = []; st.asked = ''; };
+    function onTime(e) {
+        const v = e.target, id = ask();
+        if (!id || id !== st.video || !st.segs.length) return;
+        const player = v.closest('.html5-video-player');
+        if (player && player.classList.contains('ad-showing')) return;  // an ad plays in the same <video>
+        const t = v.currentTime;
+        for (const s of st.segs) {
+            const key = s[0] + ':' + s[1];
+            if (t >= s[0] && t < s[1] - 0.3 && !st.done.has(key)) {
+                st.done.add(key);  // once: going back into it plays it
+                v.currentTime = s[1];
+                post({ video: id, skipped: s[2], from: s[0], to: s[1] });
+            }
+        }
+    }
+    function hook(v) {
+        if (v instanceof HTMLVideoElement && !v.__arrowSB) {
+            v.__arrowSB = true;
+            v.addEventListener('timeupdate', onTime, { passive: true });
+        }
+    }
+    document.addEventListener('play', function(e) { hook(e.target); ask(); }, true);
+    document.querySelectorAll('video').forEach(hook);  // switched on while a video is already playing
+    if (document.querySelector('video')) ask();
+})();
+"""
+SPONSORBLOCK_WORLD = "arrow-sponsorblock"
+SPONSORBLOCK_PAGES = ["https://www.youtube.com/*", "https://youtube.com/*", "https://m.youtube.com/*"]
+
 # What the user has selected, in the page or in the text box they're in (the clipboard guard compares it with what
 # was copied). Runs in Arrow's own script world.
 COPIED_SELECTION_JS = r"""
@@ -3925,6 +4057,7 @@ class ArrowBrowserWindow(Gtk.Window):
         self.block_notification_requests = saved_settings.get("block_notification_requests", False)
         self.lookalike_warning_enabled = saved_settings.get("lookalike_warning_enabled", True)
         self.clipboard_guard_enabled = saved_settings.get("clipboard_guard_enabled", True)
+        self.sponsorblock_enabled = saved_settings.get("sponsorblock_enabled", False)
         self.passwords_enabled = saved_settings.get("passwords_enabled", True)
         self.wellbeing_enabled = saved_settings.get("wellbeing_enabled", False)
         self.break_reminders_enabled = saved_settings.get("break_reminders_enabled", True)
@@ -3944,6 +4077,8 @@ class ArrowBrowserWindow(Gtk.Window):
         self._lookalike_tokens = {}
         self._user_copy_at = -1e9  # when the user last pressed Ctrl+C or picked Copy, for the clipboard guard
         self._clipboard_warned_text = None
+        self._sponsor_segments = {}  # YouTube video ID -> SponsorBlock segments, for this session
+        self._sponsor_fetching = set()
         self._recent_https_upgrades = {}
         self._fill_offered = set()
         self._infobar = None
@@ -4253,6 +4388,13 @@ class ArrowBrowserWindow(Gtk.Window):
             self.typed_text_script = WebKit2.UserScript.new_for_world(
                 TYPED_TEXT_TRACKER_JS, WebKit2.UserContentInjectedFrames.TOP_FRAME,
                 WebKit2.UserScriptInjectionTime.START, TYPED_TEXT_WORLD, None, None)
+
+        self.sponsorblock_script = None
+        if hasattr(WebKit2.UserScript, "new_for_world"):
+            # Only YouTube pages get it, so other sites don't pay for one more script world.
+            self.sponsorblock_script = WebKit2.UserScript.new_for_world(
+                SPONSORBLOCK_JS, WebKit2.UserContentInjectedFrames.TOP_FRAME,
+                WebKit2.UserScriptInjectionTime.START, SPONSORBLOCK_WORLD, SPONSORBLOCK_PAGES, None)
 
         self.failed_loads_script = None
         if hasattr(WebKit2.UserScript, "new_for_world"):
@@ -5219,6 +5361,7 @@ class ArrowBrowserWindow(Gtk.Window):
         webview._arrow_sig_ids = sig_ids
         self._setup_password_detection(webview)
         self._setup_failed_load_reports(webview)
+        self._setup_sponsorblock(webview)
 
         tab_box.pack_start(webview, True, True, 0)
         tab_box.show_all()
@@ -7860,6 +8003,7 @@ class ArrowBrowserWindow(Gtk.Window):
             "block_notification_requests": self.block_notification_requests,
             "lookalike_warning_enabled": self.lookalike_warning_enabled,
             "clipboard_guard_enabled": self.clipboard_guard_enabled,
+            "sponsorblock_enabled": self.sponsorblock_enabled,
             "passwords_enabled": self.passwords_enabled,
             "wellbeing_enabled": self.wellbeing_enabled,
             "break_reminders_enabled": self.break_reminders_enabled,
@@ -8673,6 +8817,11 @@ class ArrowBrowserWindow(Gtk.Window):
                    "Strips utm_*, fbclid, gclid and hundreds of other tags from addresses before they load, "
                    "and skips tracking redirects such as google.com/url?q=.",
                    store("clearurls_enabled")),
+            switch("sponsorblock_enabled", "⏭", "Skip sponsors in YouTube videos (SponsorBlock)",
+                   "Skips paid promotions, self-promotion and subscribe reminders that SponsorBlock's users "
+                   "marked (sponsor.ajay.app). Arrow sends only 4 characters of a scrambled video ID, which match "
+                   "dozens of videos, so SponsorBlock can't tell which one you watch.",
+                   self.on_sponsorblock_toggled),
         )
 
         self._settings_section(
@@ -8707,7 +8856,8 @@ class ArrowBrowserWindow(Gtk.Window):
                    self.on_webrtc_toggled),
             self._settings_row("📡", "Other connections",
                                "Besides the sites you visit and the block lists, Arrow only checks GitHub for "
-                               "updates at startup. To open pages faster, it also looks up the address you type or "
+                               "updates at startup, and asks SponsorBlock about YouTube videos you play if you turn "
+                               "it on. To open pages faster, it also looks up the address you type or "
                                "the link you point at, and connects to that site early (not in private windows)."),
         )
 
@@ -9905,6 +10055,123 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         if ucm.register_script_message_handler_in_world("arrowBlocked", FAILED_LOADS_WORLD):
             handler = ucm.connect("script-message-received::arrowBlocked", self._on_failed_loads_message)
             webview._arrow_sig_ids = getattr(webview, "_arrow_sig_ids", []) + [(ucm, handler)]
+
+    # ------------------------------------------------------------------
+    # SponsorBlock: skip sponsor segments in YouTube videos
+    # ------------------------------------------------------------------
+    SPONSOR_SEGMENTS_KEPT = 2000
+
+    def _setup_sponsorblock(self, webview):
+        """Hooks SponsorBlock into this webview's content manager (once per manager, since pop-ups share their
+        opener's), only while the switch is on: its script world then exists only on YouTube pages."""
+        if self.sponsorblock_script is None:
+            return
+        ucm = webview.get_user_content_manager()
+        if getattr(ucm, "_arrow_sb_ready", False):
+            return
+        ucm._arrow_sb_ready = True
+        ucm._arrow_sb_handler = None
+        if self.sponsorblock_enabled:
+            self._attach_sponsorblock(ucm, webview)
+
+    def _attach_sponsorblock(self, ucm, webview):
+        if ucm._arrow_sb_handler is not None:
+            return
+        ucm.add_script(self.sponsorblock_script)
+        if ucm.register_script_message_handler_in_world("arrowSB", SPONSORBLOCK_WORLD):
+            ucm._arrow_sb_handler = ucm.connect("script-message-received::arrowSB", self._on_sponsorblock_message)
+            webview._arrow_sig_ids = getattr(webview, "_arrow_sig_ids", []) + [(ucm, ucm._arrow_sb_handler)]
+        else:
+            ucm._arrow_sb_handler = 0
+
+    def _detach_sponsorblock(self, ucm):
+        if ucm._arrow_sb_handler is None:
+            return
+        ucm.remove_script(self.sponsorblock_script)
+        if ucm._arrow_sb_handler:
+            if ucm.handler_is_connected(ucm._arrow_sb_handler):
+                ucm.disconnect(ucm._arrow_sb_handler)
+            ucm.unregister_script_message_handler_in_world("arrowSB", SPONSORBLOCK_WORLD)
+        ucm._arrow_sb_handler = None
+
+    def on_sponsorblock_toggled(self, active):
+        self.sponsorblock_enabled = active
+        self.save_settings()
+        if self.sponsorblock_script is None:
+            return
+        for tb in self._tab_boxes():
+            webview = tb._arrow_webview
+            ucm = webview.get_user_content_manager()
+            if not getattr(ucm, "_arrow_sb_ready", False):
+                continue
+            youtube = site_host_of(webview.get_uri()) in SPONSORBLOCK_HOSTS
+            if not active and youtube:
+                webview.evaluate_javascript("window.__arrowSB && window.__arrowSB.clear()",
+                                            -1, SPONSORBLOCK_WORLD, None, None, None, None)
+            if active:
+                self._attach_sponsorblock(ucm, webview)
+            else:
+                self._detach_sponsorblock(ucm)
+            if active and youtube:
+                # A page that's already open starts now (the script asks once a video plays); no reload needed.
+                webview.evaluate_javascript(SPONSORBLOCK_JS, -1, SPONSORBLOCK_WORLD, None, None, None, None)
+
+    def _on_sponsorblock_message(self, ucm, js_result):
+        try:
+            message = json.loads(js_result.get_js_value().to_json(0))
+            video = message["video"]
+        except Exception:
+            return
+        webview = self._password_message_source(ucm, message.get("url"))
+        if webview is None or not video or youtube_video_id(webview.get_uri()) != video:
+            return  # sent before the tab moved on
+        if "skipped" in message:
+            what = SPONSORBLOCK_CATEGORIES.get(message["skipped"])
+            if what and webview is self.get_active_webview():
+                def clock(seconds):
+                    seconds = int(seconds) if isinstance(seconds, (int, float)) else 0
+                    return f"{seconds // 60}:{seconds % 60:02d}"
+                self.statusbar.push(self.context_id, f"⏭ Skipped a {what} ({clock(message.get('from'))}–"
+                                                     f"{clock(message.get('to'))}) · SponsorBlock")
+            return
+        if self.sponsorblock_enabled:
+            self._send_sponsor_segments(webview, video)
+
+    def _send_sponsor_segments(self, webview, video):
+        def deliver(segments):
+            if youtube_video_id(webview.get_uri()) == video and any(
+                    tb._arrow_webview is webview for tb in self._tab_boxes()):
+                webview.evaluate_javascript(
+                    f"window.__arrowSB && window.__arrowSB.set({json.dumps(video)}, {json.dumps(segments)})",
+                    -1, SPONSORBLOCK_WORLD, None, None, None, None)
+
+        if video in self._sponsor_segments:
+            deliver(self._sponsor_segments[video])
+            return
+        if video in self._sponsor_fetching:
+            return
+        self._sponsor_fetching.add(video)
+
+        def done(found):
+            self._sponsor_fetching.discard(video)
+            if found is None or getattr(self, "_window_released", False):
+                return False
+            self._sponsor_segments.update(found)  # the answer covers other videos too
+            for old in list(self._sponsor_segments)[:max(0, len(self._sponsor_segments) - self.SPONSOR_SEGMENTS_KEPT)]:
+                del self._sponsor_segments[old]
+            if self.sponsorblock_enabled:
+                deliver(found[video])
+            return False
+
+        def worker():
+            try:
+                found = fetch_sponsor_segments(video)
+            except Exception as e:
+                print(f"SponsorBlock: no answer for a video ({e})")
+                found = None
+            GLib.idle_add(done, found)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _on_failed_loads_message(self, ucm, js_result):
         try:

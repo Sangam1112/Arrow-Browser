@@ -608,6 +608,76 @@ class ScamWarningTests(unittest.TestCase):
             self.assertIsNone(risk(text), text)
 
 
+class SponsorBlockTests(unittest.TestCase):
+    def test_youtube_video_id(self):
+        for uri, video in (("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "dQw4w9WgXcQ"),
+                           ("https://youtube.com/watch?list=x&v=dQw4w9WgXcQ&t=42s", "dQw4w9WgXcQ"),
+                           ("https://m.youtube.com/watch?v=dQw4w9WgXcQ", "dQw4w9WgXcQ"),
+                           ("https://www.youtube.com/shorts/abcdefghi_-", "abcdefghi_-"),
+                           ("https://www.youtube.com/live/abcdefghi_-?si=1", "abcdefghi_-"),
+                           ("http://www.youtube.com/watch?v=dQw4w9WgXcQ", ""),
+                           ("https://www.youtube.com/watch?v=short", ""),
+                           ("https://www.youtube.com/results?search_query=x", ""),
+                           ("https://www.youtube.com.evil.example/watch?v=dQw4w9WgXcQ", ""),
+                           ("https://example.com/watch?v=dQw4w9WgXcQ", ""), ("", ""), (None, "")):
+            self.assertEqual(bb.youtube_video_id(uri), video, uri)
+
+    def test_only_a_hash_prefix_leaves(self):
+        self.assertEqual(bb.sponsorblock_prefix("dQw4w9WgXcQ"), "5f6b")
+        self.assertEqual(len(bb.sponsorblock_prefix("abcdefghi_-")), 4)
+
+    def test_parse_keeps_skip_segments_of_the_chosen_categories(self):
+        raw = json.dumps([
+            {"videoID": "dQw4w9WgXcQ", "segments": [
+                {"category": "selfpromo", "actionType": "skip", "segment": [200.5, 230]},
+                {"category": "sponsor", "actionType": "skip", "segment": [10, 40.25]},
+                {"category": "sponsor", "actionType": "mute", "segment": [50, 60]},
+                {"category": "music_offtopic", "actionType": "skip", "segment": [0, 9]},
+                {"category": "interaction", "actionType": "skip", "segment": [300, 300.4]},
+                {"category": "sponsor", "segment": ["x", 3]}, {"segment": [1, 2]}]},
+            {"videoID": "other00000_", "segments": []}, "junk", {"segments": []}])
+        self.assertEqual(bb.parse_sponsorblock(raw), {
+            "dQw4w9WgXcQ": [[10.0, 40.25, "sponsor"], [200.5, 230.0, "selfpromo"]], "other00000_": []})
+        for bad in ("", "not json", "{}", None):
+            self.assertEqual(bb.parse_sponsorblock(bad), {})
+
+    def test_fetch_sends_only_the_prefix(self):
+        import http.server
+        import threading
+        seen = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                if self.path.startswith("/api/skipSegments/5f6b?"):
+                    body = json.dumps([{"videoID": "dQw4w9WgXcQ", "segments": [
+                        {"category": "sponsor", "actionType": "skip", "segment": [1, 5]}]}]).encode()
+                    self.send_response(200)
+                else:
+                    body = b"Not Found"
+                    self.send_response(404)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        original = bb.SPONSORBLOCK_API
+        bb.SPONSORBLOCK_API = f"http://127.0.0.1:{server.server_port}/api/skipSegments/"
+        self.addCleanup(setattr, bb, "SPONSORBLOCK_API", original)
+        self.assertEqual(bb.fetch_sponsor_segments("dQw4w9WgXcQ"), {"dQw4w9WgXcQ": [[1.0, 5.0, "sponsor"]]})
+        self.assertEqual(bb.fetch_sponsor_segments("abcdefghi_-"), {"abcdefghi_-": []}, "404 means none")
+        self.assertEqual(len(seen), 2)
+        for path in seen:
+            self.assertNotIn("dQw4w9WgXcQ", path)
+            self.assertNotIn("abcdefghi_-", path)
+        self.assertIn("categories=", seen[0])
+
+
 class SiteSettingsTests(TmpDirCase):
     def test_set_get_and_cleanup(self):
         s = {}
