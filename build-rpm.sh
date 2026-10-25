@@ -78,6 +78,8 @@ python3 -m py_compile /usr/share/arrow-browser/arrow_browser.py >/dev/null 2>&1 
 if [ \$1 -eq 0 ]; then rm -rf /usr/share/arrow-browser/__pycache__; fi
 
 %changelog
+* Sun Oct 25 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.3-1
+- Links you click are upgraded to HTTPS, cleaned and checked for fake bank sites; tracker companies' own sites open; review fixes
 * Fri Oct 16 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.2-1
 - Scam warnings, YouTube sponsor skipping, a regrouped Privacy page and stability fixes
 * Thu Oct 15 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.1-1

@@ -4,6 +4,23 @@ All notable changes to Arrow Browser. Versions follow `MAJOR.MINOR.PATCH`.
 Releases are signed; the in-app updater only installs a release whose signature verifies.
 Notes from before 1.0.0 (Bharat Browser, and Arrow up to 1.6.9 in the old repository) are in [docs/HISTORY.md](docs/HISTORY.md).
 
+## [1.0.3] - 2026-10-25
+
+### Fixed
+- **Links you click in a page now get the same protection as addresses you type.** Before, only the address bar, bookmarks and new tabs were cleaned: a link clicked inside a page went out over plain `http://` and kept its `utm_`, `fbclid` and other tracking tags, because the request is sent before Arrow hears of the click. Now `http://` links are switched to HTTPS before anything is sent (local devices such as routers and printers excepted), and tracking tags are removed from a link the moment you click it, with the same rules as the address bar. A site with no secure version shows the usual "Secure connection unavailable" page with "Continue to HTTP".
+- **The fake bank site warning missed links you clicked**, for the same reason: it only caught addresses you typed or opened in a new tab. Clicked links, redirects and frames inside a page are now checked too, before the page is asked for.
+- **Some sites couldn't be opened at all**, such as sentry.io, hotjar.com, mixpanel.com and criteo.com: the built-in tracker list blocked visiting them, not just their trackers on other sites. They open now; their trackers are still blocked everywhere else.
+- **A hidden frame could save a file without a click** when the page couldn't show it. Only the page you open can turn into a download now; frames follow the normal rules (only files the server sends as downloads).
+- **Typing a `file://` address didn't open the file.** It now opens, as a file passed from another app does.
+- **Turning off "Keep the block lists up to date" kept using the downloaded lists**, and a refreshed list that was shorter than the old one was never used. The newest choice now always takes effect.
+- **Pop-ups lost their password prompts and blocked-items count** once the tab that opened them was closed.
+- **Closing the keyring's unlock window during a passwords import asked again for every login** (300 times for 300 logins). The import now stops and says the keyring stayed locked.
+- **Switching on "Hide cookie banners" could download all the block lists again (about 10 MB).** It now downloads only the cookie list, and only if it's missing.
+- **Block lists only updated when Arrow started.** A browser left open for days now checks every 6 hours.
+
+### Changed
+- **The fake site and HTTPS warning pages can no longer be read by the site they warn about**, so a frame from that site can't press "Open anyway" for you. The address bar still shows the address that was stopped.
+
 ## [1.0.2] - 2026-10-16
 
 ### Added
