@@ -523,6 +523,11 @@ def _host_matches_domain_set(host, domain_set):
             return True
     return False
 
+def _matching_domains(host, domain_set):
+    """The entries of domain_set that `host` is, or is a subdomain of."""
+    labels = (host or "").split(".")
+    return [d for d in (".".join(labels[i:]) for i in range(len(labels))) if d in domain_set]
+
 def build_content_blocker_rules_json(extra_domains=()):
     """Compile the block lists into a WKContentRuleList (WebKit's native,
     network-level content blocker). It runs inside the web process itself
@@ -547,11 +552,14 @@ def build_content_blocker_rules_json(extra_domains=()):
         for tail in ("$", "\\?"):
             rules.append({"trigger": {"url-filter": "^https?://[^?#]+" + re.escape(ext) + tail},
                           "action": {"type": "ignore-previous-rules"}})
-    # 3. Whole domains (and their subdomains).
+    # 3. Whole domains (and their subdomains). A domain that is a site of its own (sentry.io, hotjar.com) is only
+    #    blocked when another site loads it, so the site itself can still be visited; a tracking host of a bigger
+    #    site (analytics.twitter.com) is blocked everywhere, on that site too.
     for domain in sorted(BLOCKED_DOMAINS):
         prefix = f"^https?://([a-z0-9-]+\\.)*{re.escape(domain)}"
-        rules.append({"trigger": {"url-filter": prefix + "[:/]"}, "action": {"type": "block"}})
-        rules.append({"trigger": {"url-filter": prefix + "$"}, "action": {"type": "block"}})
+        party = {"load-type": ["third-party"]} if site_of(domain) == domain else {}
+        rules.append({"trigger": {"url-filter": prefix + "[:/]", **party}, "action": {"type": "block"}})
+        rules.append({"trigger": {"url-filter": prefix + "$", **party}, "action": {"type": "block"}})
     # Domains from the downloaded tracker list are limited to third-party loads, so
     # visiting a listed site directly never gets blocked.
     for domain in sorted(set(extra_domains) - set(BLOCKED_DOMAINS)):
@@ -576,9 +584,11 @@ def blocked_by_rules(url, page_host, list_domains=frozenset()):
     host = (urllib.parse.urlsplit(url).hostname or "").lower()
     if not host or not url.startswith(("http://", "https://")):
         return False
-    if _host_matches_domain_set(host, BLOCKED_DOMAINS):
-        return True
-    if list_domains and site_of(host) != site_of(page_host) and _host_matches_domain_set(host, list_domains):
+    third_party = site_of(host) != site_of(page_host)
+    for domain in _matching_domains(host, BLOCKED_DOMAINS):
+        if third_party or site_of(domain) != domain:  # a site of its own is only blocked as a third party
+            return True
+    if list_domains and third_party and _host_matches_domain_set(host, list_domains):
         return True  # downloaded-list domains only count as third-party loads
     if _host_matches_domain_set(page_host, STREAMING_EXEMPT_DOMAINS):
         return False
@@ -692,6 +702,25 @@ def secure_and_clean_url(uri, upgrade_https=True, strip_tracking=True, http_allo
             uri = "https://" + uri[len("http://"):]
             upgraded = True
     return uri, upgraded, stripped
+
+
+# Links a page opens are upgraded by WebKit itself, before anything is sent: a content rule ("make-https"), since
+# the navigation Python sees doesn't say whether it is for the page or one of its frames. The same hosts as
+# is_local_network_host() stay on http://, and so do hosts the user chose to visit over HTTP. WebKit only upgrades
+# addresses without a port (or port 80). Its rule regexes have no alternation, hence one rule per case.
+HTTPS_RULE_EXCEPTIONS = (
+    ("^http://localhost[:/]", "^http://[^/]*\\.local[:/]", "^http://[^/]*\\.lan[:/]", "^http://[^/]*\\.home[:/]",
+     "^http://[^/]*\\.internal[:/]", "^http://[^/]*\\.localdomain[:/]", "^http://127\\.", "^http://10\\.",
+     "^http://192\\.168\\.", "^http://172\\.1[6-9]\\.", "^http://172\\.2[0-9]\\.", "^http://172\\.3[01]\\.",
+     "^http://169\\.254\\.", "^http://\\[", "^http://[^./:]+[:/]"))
+HTTPS_FILTER_ID = "arrow-https-v1"
+
+
+def build_https_rules_json(allowed_hosts=()):
+    rules = [{"trigger": {"url-filter": "^http://", "resource-type": ["document"]}, "action": {"type": "make-https"}}]
+    patterns = list(HTTPS_RULE_EXCEPTIONS) + [f"^http://{re.escape(h)}[:/]" for h in sorted(allowed_hosts)]
+    rules += [{"trigger": {"url-filter": p}, "action": {"type": "ignore-previous-rules"}} for p in patterns]
+    return json.dumps(rules).encode("utf-8")
 
 
 def startup_urls_from_args(args):
@@ -1374,6 +1403,8 @@ def typed_text_is_address(text):
     text = text.strip()
     if not text or any(c.isspace() for c in text):
         return False
+    if re.match(r"[a-z][a-z0-9+-]*:(?![0-9])", text, re.IGNORECASE):
+        return False  # another scheme (file:, data:, view-source:, mailto:), not a host; on_url_activate opens file:
     host_part, slash, _path = text.partition("/")
     host, colon, port = host_part.partition(":")
     if not host:
@@ -2580,6 +2611,17 @@ def _drop_covered_subdomains(domains):
     return {d for d in domains if not _host_matches_domain_set(d.split(".", 1)[1], domains)}
 
 
+def fetch_cookie_list(url=COOKIE_LIST_URL, timeout=20):
+    """Download the cookie-banner list (~1 MB) and cache its element-hiding rules. Raises if it fails or looks
+    wrong, leaving any older copy in place."""
+    cookies = parse_abp_cosmetic_rules(_download_capped(url, TRACKER_LIST_MAX_BYTES, timeout,
+                                                        "ArrowBrowser-tracker-list").decode("utf-8", errors="replace"))
+    if len(cookies["generic"]) < 100:
+        raise ValueError(f"the cookie banner list looks wrong ({len(cookies['generic'])} rules)")
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    _write_json_private(COSMETIC_CACHES["cookies"], cookies, indent=None)
+
+
 def fetch_tracker_list(urls=TRACKER_LIST_URLS, timeout=20, cookie_url=COOKIE_LIST_URL):
     """Download + parse the block lists and cache the merged result. Raises if any list fails, so a
     half-finished update never replaces a complete older one."""
@@ -2598,10 +2640,7 @@ def fetch_tracker_list(urls=TRACKER_LIST_URLS, timeout=20, cookie_url=COOKIE_LIS
     _write_json_private(POPUP_LIST_CACHE, {"fetched": time.time(), "domains": sorted(popups)}, indent=None)
     _write_json_private(COSMETIC_CACHES["ads"], merge_cosmetic_rules(hiding), indent=None)
     try:  # cookie banners are extra: if their list can't be fetched, the old copy (if any) stays
-        cookies = parse_abp_cosmetic_rules(_download_capped(cookie_url, TRACKER_LIST_MAX_BYTES, timeout,
-                                                            "ArrowBrowser-tracker-list").decode("utf-8", errors="replace"))
-        if len(cookies["generic"]) >= 100:
-            _write_json_private(COSMETIC_CACHES["cookies"], cookies, indent=None)
+        fetch_cookie_list(cookie_url, timeout)
     except Exception as e:
         print("Cookie banner list download note:", e)
     _write_json_private(TRACKER_LIST_CACHE, {"fetched": time.time(), "sources": list(urls),
@@ -2955,6 +2994,9 @@ class SecretServiceClient:
         # the next time they're saved.
         self.legacy_applications = tuple(legacy_applications)
         self.error = ""
+        # True after the user closed the keyring's unlock dialog without unlocking it: callers that save many
+        # logins in a row stop then instead of asking again for every one.
+        self.unlock_refused = False
         self._bus = None
         self._session = None
         self._collection = None
@@ -3008,7 +3050,9 @@ class SecretServiceClient:
     def _unlock(self, objects):
         _, prompt = self._call(self.SERVICE_PATH, "org.freedesktop.Secret.Service", "Unlock",
                                GLib.Variant("(ao)", (objects,)), "(aoo)").unpack()
-        return prompt == "/" or self._run_prompt(prompt)
+        unlocked = prompt == "/" or self._run_prompt(prompt)
+        self.unlock_refused = not unlocked
+        return unlocked
 
     def store(self, host, username, password):
         """Create or replace the login for (host, username)."""
@@ -3016,6 +3060,7 @@ class SecretServiceClient:
             return False
         try:
             if self._locked(self._collection, "Collection") and not self._unlock([self._collection]):
+                self.error = "the keyring wasn't unlocked"
                 return False
             attrs = {"application": self.application, "host": host, "username": username}
             props = {"org.freedesktop.Secret.Item.Label": GLib.Variant("s", f"Arrow Browser: {username} @ {host}"),
@@ -3033,7 +3078,7 @@ class SecretServiceClient:
             return False
 
     def _search_items(self, host, username, applications):
-        items = []
+        items, locked_items = [], []
         for application in applications:
             attrs = {"application": application}
             if host:
@@ -3042,9 +3087,10 @@ class SecretServiceClient:
                 attrs["username"] = username
             unlocked, locked = self._call(self.SERVICE_PATH, "org.freedesktop.Secret.Service", "SearchItems",
                                           GLib.Variant("(a{ss})", (attrs,)), "(aoao)").unpack()
-            if locked and self._unlock(locked):
-                unlocked = list(unlocked) + list(locked)
             items.extend(unlocked)
+            locked_items.extend(locked)
+        if locked_items and self._unlock(locked_items):  # one unlock dialog for all of them, not one per name
+            items.extend(locked_items)
         return items
 
     def find(self, host=None):
@@ -3819,6 +3865,99 @@ SPONSORBLOCK_JS = r"""
 })();
 """
 SPONSORBLOCK_WORLD = "arrow-sponsorblock"
+
+# Cleans a link the moment it is clicked, in every frame and before the click navigates: WebKit sends the request
+# before Python hears about a page's navigation, so the address can't be cleaned there. The same cleaning as
+# sanitize_url(): the built-in tracking parameters and the downloaded ClearURLs rules (JavaScript regexes to begin
+# with). Runs in Arrow's own script world; listening in both phases catches a page that changes the link on click.
+LINK_CLEAN_JS = r"""
+(function() {
+    if (window.__arrowLinks) return;
+    window.__arrowLinks = true;
+    const PROVIDERS = __ARROW_PROVIDERS__, BUILTIN = new Set(__ARROW_BUILTIN__);
+    let compiled = null;
+    function re(p, flags) { try { return p ? new RegExp(p, flags || 'i') : null; } catch (e) { return null; } }
+    function all(list, flags) { return (list || []).map(p => re(p, flags)).filter(Boolean); }
+    function compile() {
+        compiled = PROVIDERS.map(p => {
+            const params = p[2].filter(x => re(x));  // as in Python, a pattern that doesn't compile is skipped
+            return { url: re(p[0]), exceptions: all(p[1]), params: params.length ? re('^(?:' + params.join('|') + ')$') : null,
+                     raw: all(p[3], 'gi'), redirects: all(p[4]) };
+        }).filter(p => p.url);
+    }
+    function decode(s, plus) {
+        try { return decodeURIComponent(plus ? s.replace(/\+/g, ' ') : s); } catch (e) { return s; }
+    }
+    function dropParams(url, isTracking) {
+        const hash = url.indexOf('#'), fragment = hash < 0 ? '' : url.slice(hash);
+        const rest = hash < 0 ? url : url.slice(0, hash), q = rest.indexOf('?');
+        if (q < 0) return url;
+        const segments = rest.slice(q + 1).split('&');
+        const kept = segments.filter(s => !(s && isTracking(s.split('=')[0])));
+        if (kept.length === segments.length) return url;
+        const query = kept.filter(Boolean).join('&');
+        return rest.slice(0, q) + (query ? '?' + query : '') + fragment;
+    }
+    function applyRules(url, depth) {
+        for (const p of compiled) {
+            if (!p.url.test(url) || p.exceptions.some(e => e.test(url))) continue;
+            if (depth < 2) {
+                for (const r of p.redirects) {
+                    const m = url.match(r), target = m && m.length > 1 ? decode(m[1] || '') : '';
+                    if (/^https?:\/\//.test(target)) return applyRules(target, depth + 1);
+                }
+            }
+            for (const raw of p.raw) url = url.replace(raw, '');
+            if (p.params) url = dropParams(url, k => p.params.test(k));
+        }
+        return url;
+    }
+    function builtin(key) { key = decode(key, true).toLowerCase(); return BUILTIN.has(key) || key.startsWith('utm_'); }
+    function clean(e) {
+        for (const el of (e.composedPath ? e.composedPath() : [e.target])) {
+            if (!(el instanceof HTMLAnchorElement || el instanceof HTMLAreaElement)) continue;
+            const href = el.href;
+            if (!/^https?:\/\//i.test(href)) return;
+            if (!compiled) compile();
+            let url = href;
+            try { url = dropParams(applyRules(href, 0), builtin); } catch (err) {}
+            if (url !== href) {
+                el.href = url;
+                try { window.webkit.messageHandlers.arrowLinks.postMessage(1); } catch (err) {}
+            }
+            return;
+        }
+    }
+    for (const type of ['click', 'auxclick']) {
+        window.addEventListener(type, clean, true);
+        window.addEventListener(type, clean, false);
+    }
+})();
+"""
+LINK_CLEAN_WORLD = "arrow-links"
+
+
+def link_clean_js(providers):
+    """LINK_CLEAN_JS with the ClearURLs `providers` (the "providers" of the downloaded rules, or {})."""
+    compact = []
+    for _name, p in sorted(providers.items()) if isinstance(providers, dict) else ():
+        if isinstance(p, dict) and isinstance(p.get("urlPattern"), str):
+            lists = [[x for x in p.get(k) or [] if isinstance(x, str) and x] if isinstance(p.get(k), list) else []
+                     for k in ("exceptions", "rules", "rawRules", "redirections")]
+            compact.append([p["urlPattern"]] + lists)
+    return (LINK_CLEAN_JS.replace("__ARROW_PROVIDERS__", json.dumps(compact))
+            .replace("__ARROW_BUILTIN__", json.dumps(sorted(TRACKING_PARAMS))))
+
+
+def load_url_rules_providers():
+    """The downloaded ClearURLs providers and when they were fetched, without compiling them: ({}, 0) if none."""
+    try:
+        with open(URL_RULES_CACHE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        providers = data.get("providers")
+        return (providers if isinstance(providers, dict) else {}), float(data.get("fetched", 0))
+    except Exception:
+        return {}, 0.0
 SPONSORBLOCK_PAGES = ["https://www.youtube.com/*", "https://youtube.com/*", "https://m.youtube.com/*"]
 
 # What the user has selected, in the page or in the text box they're in (the clipboard guard compares it with what
@@ -4402,6 +4541,13 @@ class ArrowBrowserWindow(Gtk.Window):
                 FAILED_LOADS_JS, WebKit2.UserContentInjectedFrames.TOP_FRAME,
                 WebKit2.UserScriptInjectionTime.START, FAILED_LOADS_WORLD, None, None)
 
+        self.link_clean_script = None  # built by _refresh_link_clean_script (needs the settings, the rules)
+        self._refresh_link_clean_script()
+        self.https_filter = None  # the make-https rules for links pages open (_compile_https_filter)
+        self._https_filter_wanted = None
+        self._https_store_dir = None
+        self._compile_https_filter()
+
         # Gtk.Notebook for Multi-Tab Architecture
         self.notebook = Gtk.Notebook()
         self.notebook.set_scrollable(True)
@@ -4556,6 +4702,7 @@ class ArrowBrowserWindow(Gtk.Window):
         # Refresh the downloaded tracker list in the background if it's stale.
         if not self.is_private:
             GLib.timeout_add_seconds(20, self._maybe_refresh_tracker_list)
+            GLib.timeout_add_seconds(self.TRACKER_LIST_CHECK_SECONDS, self._periodic_tracker_list_check)
 
         # Keybindings (Ctrl+T, Ctrl+W, Ctrl+R)
         self.connect("key-press-event", self.on_key_press)
@@ -4632,7 +4779,7 @@ class ArrowBrowserWindow(Gtk.Window):
             print("Cache trim note:", e)
         self._relieve_memory_pressure()
 
-    BASE_FILTER_ID = "arrow-adblock-v3"  # bump whenever the built-in rules change: compiled filters are cached by id
+    BASE_FILTER_ID = "arrow-adblock-v4"  # bump whenever the built-in rules change: compiled filters are cached by id
 
     def _compile_content_blocker_filter(self):
         """Install the native content blocker. Compiled filters persist in WebKit's
@@ -4648,7 +4795,11 @@ class ArrowBrowserWindow(Gtk.Window):
             count = summary["count"] if summary else 0
             full_id = self.BASE_FILTER_ID + (f"-{int(summary['fetched'])}-{count}" if count else "")
             keep = {self.BASE_FILTER_ID, full_id}
-            if self.content_filter is None:
+            # The filter to end up with: the newest request wins, a smaller list included (lists switched off,
+            # or a refreshed list that is shorter). The built-in rules also go in first while a fuller filter
+            # compiles, so the browser is never unprotected.
+            self._content_filter_wanted = full_id
+            if self.content_filter is None or full_id == self.BASE_FILTER_ID:
                 self._load_or_compile_filter(store, self.BASE_FILTER_ID, 0, keep)
             if count:
                 self._load_or_compile_filter(store, full_id, count, keep)
@@ -4705,12 +4856,7 @@ class ArrowBrowserWindow(Gtk.Window):
         return [f for f in found if f is not None]
 
     def _resync_content_filters(self):
-        managers = []
-        for tb in self._tab_boxes():
-            ucm = tb._arrow_webview.get_user_content_manager()
-            if not any(ucm == m for m in managers):
-                managers.append(ucm)
-        for ucm in managers:
+        for ucm in self._content_managers():
             self._sync_content_filter(ucm)
 
     def _load_or_compile_filter(self, store, identifier, rank, keep):
@@ -4719,26 +4865,28 @@ class ArrowBrowserWindow(Gtk.Window):
     def _on_content_filter_loaded(self, store, result, data):
         _, identifier, rank, keep = data
         try:
-            self._install_content_filter(store, store.load_finish(result), rank, keep)
+            self._install_content_filter(store, store.load_finish(result), identifier, rank, keep)
         except Exception:
             # Not compiled yet (first run, or the lists changed): compile in the background. Only now are
             # the downloaded domains read in; a launch that finds the compiled filter never needs them.
             try:
                 rules = build_content_blocker_rules_json(load_tracker_list_cache()[0] if rank else ())
-                store.save(identifier, GLib.Bytes.new(rules), None, self._on_content_filter_saved, (rank, keep))
+                store.save(identifier, GLib.Bytes.new(rules), None, self._on_content_filter_saved,
+                           (identifier, rank, keep))
             except Exception as e:
                 print("Content filter compile note:", e)
 
     def _on_content_filter_saved(self, store, result, data):
-        rank, keep = data
+        identifier, rank, keep = data
         try:
-            self._install_content_filter(store, store.save_finish(result), rank, keep)
+            self._install_content_filter(store, store.save_finish(result), identifier, rank, keep)
         except Exception as e:
             print("Content filter save note:", e)
 
-    def _install_content_filter(self, store, content_filter, rank, keep):
-        if rank < getattr(self, "_content_filter_rank", -1):
-            return  # a fuller filter is already active; don't replace it with a smaller one
+    def _install_content_filter(self, store, content_filter, identifier, rank, keep):
+        if identifier != getattr(self, "_content_filter_wanted", identifier) and (
+                self.content_filter is not None or identifier != self.BASE_FILTER_ID):
+            return  # an earlier request, or the built-in rules once the filter that is wanted is already on
         self._content_filter_rank = rank
         self.content_filter = content_filter
         # Swap the new filter into every open tab (and cover tabs opened before
@@ -5301,6 +5449,8 @@ class ArrowBrowserWindow(Gtk.Window):
             ucm._arrow_filters = self._active_filters()
             for content_filter in ucm._arrow_filters:
                 ucm.add_filter(content_filter)
+        self._sync_https_filter(ucm)
+        self._setup_link_cleaning(ucm)
 
         # 1. Media Codec Polyfill, 1b. Anti-Fingerprinting Farbling Engine,
         # 2. Smart Link Prefetching — shared, pre-built instances (see __init__).
@@ -5899,6 +6049,9 @@ class ArrowBrowserWindow(Gtk.Window):
             self._clipboard_handler = None
         if wellbeing_tracker().dirty:
             wellbeing_tracker().save()
+        if self._https_store_dir:
+            shutil.rmtree(self._https_store_dir, ignore_errors=True)
+            self._https_store_dir = None
         _LIVE_WINDOW_COUNT -= 1
         if _LIVE_WINDOW_COUNT <= 0:
             Gtk.main_quit()
@@ -6439,6 +6592,13 @@ class ArrowBrowserWindow(Gtk.Window):
 
     def on_decide_policy(self, webview, decision, decision_type):
         if decision_type == WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
+            # Checked here, before anything is sent: by load-changed STARTED a clicked link's request is already
+            # out, and the view still reports the previous page's address. Frames are checked too.
+            uri = decision.get_navigation_action().get_request().get_uri() or ""
+            if self._stop_lookalike(webview, uri):
+                decision.ignore()
+                return True
+            self._note_link_upgrade(decision)
             return self._secure_first_navigation(webview, decision)
         # Only response decisions (i.e. we already have headers back and
         # know the content type) carry is_mime_type_supported(); new-window
@@ -6446,10 +6606,13 @@ class ArrowBrowserWindow(Gtk.Window):
         # own default handling.
         if decision_type != WebKit2.PolicyDecisionType.RESPONSE:
             return False
-        if not decision.is_mime_type_supported():
+        main = decision.is_main_frame_main_resource() if hasattr(decision, "is_main_frame_main_resource") else True
+        if main and not decision.is_mime_type_supported():
             # .doc/.docx/.xls/.xlsx and similar have no in-browser renderer
             # (unlike PDF, which WebKit renders natively) — download instead
-            # of leaving the user with an interrupted, blank frame.
+            # of leaving the user with an interrupted, blank frame. Only the page itself: a frame's file that
+            # can't be shown is left to WebKit, which downloads it only if the server sends it as a download
+            # (attachment), so a hidden frame can't save just anything without a click.
             decision.download()
             return True
         return False
@@ -7557,6 +7720,12 @@ class ArrowBrowserWindow(Gtk.Window):
         text = entry.get_text().strip()
         if not text:
             return
+        if text.lower().startswith("file://"):
+            webview = self.get_active_webview()
+            if webview:  # a file on this computer, as the browser opens one passed by another app
+                webview.load_uri(text)
+                webview.grab_focus()
+            return
         if not text.startswith("http://") and not text.startswith("https://") and not text.startswith("about:"):
             host_candidate = text.split('/', 1)[0].split(':', 1)[0]
             if typed_text_is_address(text):
@@ -7902,9 +8071,6 @@ class ArrowBrowserWindow(Gtk.Window):
             host = site_host_of(webview.get_uri())
             if host:
                 self._apply_site_policy(webview, host)
-            # A redirect counts too: a short link can lead to a fake bank page.
-            if host and self._stop_lookalike(webview, webview.get_uri() or ""):
-                return
         if load_event == WebKit2.LoadEvent.STARTED:
             if self._infobar is not None and getattr(self._infobar, "_arrow_fill_for", None) is webview:
                 self._clear_infobar()
@@ -8816,7 +8982,7 @@ class ArrowBrowserWindow(Gtk.Window):
             switch("clearurls_enabled", "🔗", "Remove tracking tags from links",
                    "Strips utm_*, fbclid, gclid and hundreds of other tags from addresses before they load, "
                    "and skips tracking redirects such as google.com/url?q=.",
-                   store("clearurls_enabled")),
+                   self.on_clearurls_toggled),
             switch("sponsorblock_enabled", "⏭", "Skip sponsors in YouTube videos (SponsorBlock)",
                    "Skips paid promotions, self-promotion and subscribe reminders that SponsorBlock's users "
                    "marked (sponsor.ajay.app). Arrow sends only 4 characters of a scrambled video ID, which match "
@@ -8850,7 +9016,7 @@ class ArrowBrowserWindow(Gtk.Window):
             priv, "CONNECTIONS",
             switch("https_enabled", "🔒", "Always use secure connections (HTTPS)",
                    "Upgrades http:// addresses to https://. If a site has no secure version, you're asked before continuing.",
-                   store("https_enabled")),
+                   self.on_https_toggled),
             switch("webrtc_enabled", "🎥", "Allow camera, microphone and WebRTC",
                    "Off by default: WebRTC can reveal your real IP address, even behind a VPN. Turn on for video calls.",
                    self.on_webrtc_toggled),
@@ -9133,13 +9299,17 @@ class ArrowBrowserWindow(Gtk.Window):
         self.hide_cookie_banners = active
         self.save_settings()
         self._resync_content_filters()
-        if active and "cookies" not in self.cosmetic_filters and self.tracker_lists_enabled and not self.is_private:
-            self.refresh_tracker_list_async(url_rules=False)  # no cookie list downloaded yet
+        if (active and self.tracker_lists_enabled and not self.is_private
+                and not os.path.exists(COSMETIC_CACHES["cookies"])):
+            # no cookie list downloaded yet: fetch just that one (one that's there but didn't compile wouldn't
+            # compile any better from a fresh copy)
+            self.refresh_tracker_list_async(lists=False, url_rules=False, cookie_list=True)
 
     def on_tracker_lists_toggled(self, active):
         self.tracker_lists_enabled = active
         self.save_settings()
         self._compile_content_blocker_filter()  # recompile with or without the downloaded list
+        self._refresh_link_clean_script()  # with or without the downloaded link-cleaning rules
         if active and not self.is_private:
             self._maybe_refresh_tracker_list()
 
@@ -9411,7 +9581,12 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             host = site_host_of(target)
             if target.startswith("http://") and host:
                 self._http_allowed_hosts.add(host)
-                page = f"<html><head><meta http-equiv='refresh' content='0;url={html_module.escape(target, quote=True)}'></head></html>"
+                # WebKit's make-https rule would upgrade it straight back: the address opens once the rules
+                # with this exception are in place.
+                view = request.get_web_view() if hasattr(request, "get_web_view") else None
+                self._compile_https_filter(lambda: view is not None and view.load_uri(target))
+                page = (f"<html><body style='background:#0b0e14;color:#cbd5e1;font-family:{UI_FONT_STACK};"
+                        f"padding:40px'>Opening {html_module.escape(target)} over HTTP…</body></html>")
         elif parsed.netloc == "allow-site":
             # Continue past the look-alike warning; same one-time token as allow-http.
             token = (urllib.parse.parse_qs(parsed.query).get("t") or [""])[0]
@@ -9452,7 +9627,9 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         actions = (f'<a class="btn" href="{esc(failing_uri, quote=True)}">Try again</a>'
                    f'<a class="btn alt" href="arrow://allow-http?t={token}">Continue to HTTP (not secure)</a>')
         page = build_notice_page("🔓", "Secure connection unavailable", body, actions, error_message)
-        GLib.idle_add(lambda: webview.load_html(with_ui_font(page), failing_uri))
+        # Alternate HTML: the address bar shows the address that failed, but the page is not that site's (its own
+        # opaque origin), so nothing from the site can read the one-time token in it.
+        GLib.idle_add(lambda: (webview.load_alternate_html(with_ui_font(page), failing_uri, None), False)[1])
         self.statusbar.push(self.context_id, f"🔓 {host} didn't answer over HTTPS")
 
     # ------------------------------------------------------------------
@@ -9463,9 +9640,6 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         and shows a warning in its place. True when it did."""
         if not self.lookalike_warning_enabled or not uri.startswith(("http://", "https://")):
             return False
-        if getattr(webview, "_arrow_lookalike_page", None) == uri:
-            webview._arrow_lookalike_page = None  # the warning itself, shown at the same address
-            return False
         host = site_host_of(uri)
         if self.site_settings.get(host, {}).get("lookalike_ok"):
             return False
@@ -9473,9 +9647,10 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         if match is None:
             return False
         page = self._lookalike_warning_page(uri, host, match)
-        webview._arrow_lookalike_page = uri
         webview.stop_loading()
-        GLib.idle_add(lambda: (webview.load_html(with_ui_font(page), uri), False)[1])
+        # Shown at the fake address, but not as that site's page (see _show_https_warning). Alternate HTML doesn't
+        # go through decide-policy, so it doesn't trigger this check again; Reload does, and shows it again.
+        GLib.idle_add(lambda: (webview.load_alternate_html(with_ui_font(page), uri, None), False)[1])
         self.statusbar.push(self.context_id, f"⚠️ Stopped {host}: it may be a fake site")
         return True
 
@@ -10052,9 +10227,132 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             return
         ucm._arrow_failed_ready = True
         ucm.add_script(self.failed_loads_script)
+        # Kept on the content manager, not on this tab's view: tabs a page opens share the manager, and closing
+        # the opener tab must not cut them off (the manager goes away with the last tab using it).
         if ucm.register_script_message_handler_in_world("arrowBlocked", FAILED_LOADS_WORLD):
-            handler = ucm.connect("script-message-received::arrowBlocked", self._on_failed_loads_message)
-            webview._arrow_sig_ids = getattr(webview, "_arrow_sig_ids", []) + [(ucm, handler)]
+            ucm._arrow_failed_handler = ucm.connect("script-message-received::arrowBlocked",
+                                                    self._on_failed_loads_message)
+
+    # ------------------------------------------------------------------
+    # Links a page opens: cleaned of tracking tags (in the page) and upgraded to HTTPS (by WebKit)
+    # ------------------------------------------------------------------
+    def _refresh_link_clean_script(self):
+        """(Re)build the link-cleaning script from the settings and the downloaded rules, and give it to every
+        open tab. None while "Remove tracking tags from links" is off."""
+        script = None
+        if self.clearurls_enabled and hasattr(WebKit2.UserScript, "new_for_world"):
+            providers = load_url_rules_providers()[0] if self.tracker_lists_enabled else {}
+            script = WebKit2.UserScript.new_for_world(
+                link_clean_js(providers), WebKit2.UserContentInjectedFrames.ALL_FRAMES,
+                WebKit2.UserScriptInjectionTime.START, LINK_CLEAN_WORLD, None, None)
+        self.link_clean_script = script
+        if hasattr(self, "notebook"):
+            for ucm in self._content_managers():
+                self._setup_link_cleaning(ucm)
+
+    def _setup_link_cleaning(self, ucm):
+        if not getattr(ucm, "_arrow_links_ready", False):
+            ucm._arrow_links_ready = True
+            if hasattr(ucm, "register_script_message_handler_in_world") and \
+                    ucm.register_script_message_handler_in_world("arrowLinks", LINK_CLEAN_WORLD):
+                ucm._arrow_links_handler = ucm.connect("script-message-received::arrowLinks",
+                                                       lambda _m, _r: self._count_event("params"))
+        have = getattr(ucm, "_arrow_link_script", None)
+        if have is not self.link_clean_script:
+            if have is not None:
+                ucm.remove_script(have)
+            if self.link_clean_script is not None:
+                ucm.add_script(self.link_clean_script)
+            ucm._arrow_link_script = self.link_clean_script
+
+    def _content_managers(self):
+        managers = []
+        for tb in self._tab_boxes():
+            ucm = tb._arrow_webview.get_user_content_manager()
+            if not any(ucm == m for m in managers):
+                managers.append(ucm)
+        return managers
+
+    def _https_store(self):
+        """Where the make-https rules are compiled: a folder of this run's own (in the per-user runtime folder,
+        which is in memory) that goes when the window closes, since the rules name the hosts the user chose to
+        visit over HTTP, and a private window must leave no trace of them."""
+        if self._https_store_dir is None:
+            runtime = os.environ.get("XDG_RUNTIME_DIR")
+            self._https_store_dir = tempfile.mkdtemp(
+                prefix="arrow-https-", dir=runtime if runtime and os.access(runtime, os.W_OK) else None)
+        return WebKit2.UserContentFilterStore.new(self._https_store_dir)
+
+    def _compile_https_filter(self, on_done=None):
+        """Compile the make-https rules (with this window's HTTP exceptions) and put them in every tab.
+        on_done() runs once the new rules are in place, or failed to compile."""
+        hosts = sorted(self._http_allowed_hosts)
+        identifier = HTTPS_FILTER_ID + ("-" + hashlib.sha256("\n".join(hosts).encode()).hexdigest()[:16]
+                                        if hosts else "")
+        self._https_filter_wanted = identifier
+
+        def saved(store, result, _data):
+            try:
+                content_filter = store.save_finish(result)
+            except GLib.Error as e:
+                print("HTTPS rules compile note:", e.message)
+                content_filter = None
+            if self._https_filter_wanted == identifier and not self._window_released:
+                if content_filter is not None:
+                    self.https_filter = content_filter
+                if hasattr(self, "notebook"):
+                    for ucm in self._content_managers():
+                        self._sync_https_filter(ucm)
+            if on_done:
+                on_done()
+
+        try:
+            self._https_store().save(identifier, GLib.Bytes.new(build_https_rules_json(hosts)), None, saved, None)
+        except Exception as e:
+            print("HTTPS rules compile note:", e)
+            if on_done:
+                on_done()
+
+    def _sync_https_filter(self, ucm):
+        want = self.https_filter if self.https_enabled else None
+        have = getattr(ucm, "_arrow_https_filter", None)
+        if have is want:
+            return
+        if have is not None:
+            ucm.remove_filter(have)
+        if want is not None:
+            ucm.add_filter(want)
+        ucm._arrow_https_filter = want
+
+    def on_https_toggled(self, active):
+        self.https_enabled = active
+        self.save_settings()
+        for ucm in self._content_managers():
+            self._sync_https_filter(ucm)
+
+    def on_clearurls_toggled(self, active):
+        self.clearurls_enabled = active
+        self.save_settings()
+        self._refresh_link_clean_script()
+
+    def _note_link_upgrade(self, decision):
+        """A plain http:// address that WebKit's make-https rule is about to upgrade (see HTTPS_RULE_EXCEPTIONS):
+        counted for the Privacy Report, and remembered so a site that has no HTTPS gets the warning page."""
+        if not (self.https_enabled and self.https_filter is not None):
+            return
+        uri = decision.get_navigation_action().get_request().get_uri() or ""
+        if not uri.startswith("http://"):
+            return
+        try:
+            parts = urllib.parse.urlsplit(uri)
+            host, port = (parts.hostname or "").lower(), parts.port
+        except ValueError:
+            return
+        if host and port in (None, 80) and not is_local_network_host(host) and host not in self._http_allowed_hosts:
+            if len(self._recent_https_upgrades) > 200:
+                self._recent_https_upgrades.clear()
+            self._recent_https_upgrades[host] = time.monotonic()
+            self._count_event("https")
 
     # ------------------------------------------------------------------
     # SponsorBlock: skip sponsor segments in YouTube videos
@@ -10079,8 +10377,8 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             return
         ucm.add_script(self.sponsorblock_script)
         if ucm.register_script_message_handler_in_world("arrowSB", SPONSORBLOCK_WORLD):
+            # kept on the manager, see _setup_failed_load_reports
             ucm._arrow_sb_handler = ucm.connect("script-message-received::arrowSB", self._on_sponsorblock_message)
-            webview._arrow_sig_ids = getattr(webview, "_arrow_sig_ids", []) + [(ucm, ucm._arrow_sb_handler)]
         else:
             ucm._arrow_sb_handler = 0
 
@@ -10575,36 +10873,56 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         if not self.secrets.available():
             status_label.set_text(f"❌ No system keyring found, so passwords can't be saved ({self.secrets.error}).")
             return
+        def offer_delete():
+            if not self._ask(parent, f"Delete {name} now?",
+                             "It holds your passwords in plain text, so anyone or any program that opens it can read "
+                             "them. They're safe in your keyring now.", "Delete", "settings-danger-btn"):
+                return
+            try:
+                os.remove(path)
+                status_label.set_text(status_label.get_text() + f" {name} was deleted.")
+            except OSError as e:
+                status_label.set_text(status_label.get_text() + f" Couldn't delete {name}: {e}")
+
+        self.save_imported_logins(logins, name, status_label, offer_delete)
+
+    def save_imported_logins(self, logins, name, status_label, offer_delete=None):
+        """Save imported logins to the keyring in small batches (the window stays responsive). Logins already
+        saved stay as they are. If the keyring asks to be unlocked and the user says no, the import stops there
+        rather than asking again for every login. offer_delete() runs when some were saved."""
+        self.secrets.unlock_refused = False
         saved = {(f["host"], f["username"]) for f in self.secrets.find()}
+        if getattr(self.secrets, "unlock_refused", False):
+            status_label.set_text("❌ The keyring stayed locked, so no passwords were saved.")
+            return
         todo = [login for login in logins if (login["host"], login["username"]) not in saved]
-        state = {"next": 0, "added": 0, "failed": 0}
+        state = {"next": 0, "added": 0, "failed": 0, "stopped": False}
 
         def finish():
             parts = [f"✅ Saved {state['added']} passwords from {name} to your keyring."]
             if len(logins) > len(todo):
                 parts.append(f"{len(logins) - len(todo)} you had already saved were left as they were.")
-            if state["failed"]:
+            if state["stopped"]:
+                parts.append(f"⚠️ The keyring stayed locked, so the other {state['failed']} weren't saved.")
+            elif state["failed"]:
                 parts.append(f"⚠️ {state['failed']} couldn't be saved: {self.secrets.error}")
             status_label.set_text(" ".join(parts))
-            if state["added"] and self._ask(
-                    parent, f"Delete {name} now?",
-                    "It holds your passwords in plain text, so anyone or any program that opens it can read them. "
-                    "They're safe in your keyring now.", "Delete", "settings-danger-btn"):
-                try:
-                    os.remove(path)
-                    status_label.set_text(status_label.get_text() + f" {name} was deleted.")
-                except OSError as e:
-                    status_label.set_text(status_label.get_text() + f" Couldn't delete {name}: {e}")
+            if state["added"] and offer_delete:
+                offer_delete()
 
         def step():
             batch = todo[state["next"]:state["next"] + 20]
-            state["next"] += len(batch)
             for login in batch:
+                state["next"] += 1
                 if self.secrets.store(login["host"], login["username"], login["password"]):
                     state["added"] += 1
-                else:
-                    state["failed"] += 1
-            if state["next"] < len(todo):
+                    continue
+                if getattr(self.secrets, "unlock_refused", False):
+                    state["stopped"] = True
+                    state["failed"] = len(todo) - state["added"]
+                    break
+                state["failed"] += 1
+            if not state["stopped"] and state["next"] < len(todo):
                 status_label.set_text(f"Saving passwords… {state['next']} of {len(todo)}")
                 return True
             finish()
@@ -10867,9 +11185,9 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             switch("adblock_enabled", "🛡️", "Block ads and trackers",
                    "Stops known ad and tracking servers on every site.", store("adblock_enabled")),
             switch("clearurls_enabled", "🔗", "Remove tracking tags from links",
-                   "Strips utm_*, fbclid, gclid and similar tags before pages load.", store("clearurls_enabled")),
+                   "Strips utm_*, fbclid, gclid and similar tags before pages load.", self.on_clearurls_toggled),
             switch("https_enabled", "🔒", "Always use secure connections (HTTPS)",
-                   "If a site has no secure version, you're asked before continuing.", store("https_enabled")),
+                   "If a site has no secure version, you're asked before continuing.", self.on_https_toggled),
         )
         self._settings_section(
             privacy, "YOUR DATA",
@@ -11008,9 +11326,9 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             return
         ucm._arrow_pw_ready = True
         ucm.add_script(self.password_script)
-        if ucm.register_script_message_handler_in_world("arrowPw", "arrow-pw"):
-            handler = ucm.connect("script-message-received::arrowPw", self._on_password_message)
-            webview._arrow_sig_ids = getattr(webview, "_arrow_sig_ids", []) + [(ucm, handler)]
+        if ucm.register_script_message_handler_in_world("arrowPw", "arrow-pw"):  # kept on the manager, see
+            ucm._arrow_pw_handler = ucm.connect("script-message-received::arrowPw",  # _setup_failed_load_reports
+                                                self._on_password_message)
 
     def _on_password_message(self, ucm, js_result):
         if self.is_private or not self.passwords_enabled:
@@ -11361,32 +11679,54 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
     def _maybe_refresh_tracker_list(self):
         if self.tracker_lists_enabled and not self.is_private:
             lists = tracker_list_is_stale()
-            url_rules = time.time() - load_url_rules_cache()[1] > TRACKER_LIST_MAX_AGE
+            url_rules = time.time() - load_url_rules_providers()[1] > TRACKER_LIST_MAX_AGE  # nothing compiled here
             if lists or url_rules:
                 self.refresh_tracker_list_async(lists=lists, url_rules=url_rules)
         return False
 
-    def refresh_tracker_list_async(self, on_done=None, lists=True, url_rules=True):
-        """Download the block lists and/or the link-cleaning rules in a background thread, then recompile the
-        blocker. A failure of one doesn't stop the other; on_done gets the error text, or None."""
+    TRACKER_LIST_CHECK_SECONDS = 6 * 3600
+
+    def _periodic_tracker_list_check(self):
+        """A browser left open for days still gets the weekly list updates, not only one that is started again."""
+        if self._window_released:
+            return False
+        self._maybe_refresh_tracker_list()
+        return True
+
+    def refresh_tracker_list_async(self, on_done=None, lists=True, url_rules=True, cookie_list=False):
+        """Download the block lists and/or the link-cleaning rules (or just the cookie-banner list) in a background
+        thread, then recompile the blocker. A failure of one doesn't stop the other; on_done gets the error text,
+        or None."""
         def worker():
             errors = []
             domains = None
+            rules_fetched = cookies_fetched = False
             if lists:
                 try:
                     domains = fetch_tracker_list()
                 except Exception as e:
                     errors.append(f"block lists: {e}")
+            if cookie_list:
+                try:
+                    fetch_cookie_list()
+                    cookies_fetched = True
+                except Exception as e:
+                    errors.append(f"cookie banner list: {e}")
             if url_rules:
                 try:
                     fetch_url_rules()
+                    rules_fetched = True
                 except Exception as e:
                     errors.append(f"link-cleaning rules: {e}")
             error = "; ".join(errors) or None
 
             def finish():
-                if domains is not None:
+                if self._window_released:
+                    return False
+                if domains is not None or cookies_fetched:
                     self._compile_content_blocker_filter()
+                if rules_fetched:
+                    self._refresh_link_clean_script()
                 if on_done:
                     on_done(error)
                 return False

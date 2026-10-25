@@ -98,6 +98,11 @@ PAGES = {
     # a YouTube-like watch page (the test maps it to https://www.youtube.com/watch?v=...)
     "/watch": ("<html><title>watch</title><body><div class='html5-video-player'><video id='v' src='/sb.webm' muted "
                "autoplay width=160 height=90></video></div></body></html>"),
+    # links a page opens itself: to a look-alike bank address, and plain http:// to a site with no HTTPS
+    "/clicklinks": ("<html><title>clicklinks</title><body><a id='fake' href='https://hdfc-netbanking.invalid/login'>"
+                    "bank</a> <a id='plain' href='http://arrow-https-test.invalid/page'>plain</a></body></html>"),
+    # a hidden frame whose file can't be shown and isn't sent as a download
+    "/blobframe": "<html><title>blobframe</title><body><iframe style='display:none' src='/blob.bin'></iframe></body></html>",
     "/dlframes": "<html><title>dlframes</title><body>" + "".join(
         f"<iframe style='display:none' src='/dl?n={i}'></iframe>" for i in range(5)) + "</body></html>",
 }
@@ -201,6 +206,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = b"Not Found"
                 self.send_response(404)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path == "/blob.bin":
+            body = b"\x00not a page"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-arrow-test")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -723,6 +736,68 @@ class WindowFeatureTests(unittest.TestCase):
         self.assertTrue(spin(lambda: "Secure connection unavailable" in (js(wv, "document.body.innerText") or ""), 15))
         self.assertEqual(self.win.stats["https"], before + 1)
         self.assertNotIn("/blank", Handler.requests, "nothing was sent over plain HTTP")
+
+    def test_clicked_link_loses_its_tracking_parameters_before_it_is_sent(self):
+        # WebKit sends a clicked link's request before Python hears of it, so the page's own script cleans it.
+        win = self.win
+        before = win.stats["params"]
+        wv = self.load("/menu", "menu")
+        js(wv, "document.getElementById('link').click()")
+        self.assertTrue(spin(lambda: "/done?k=1" in Handler.requests, 8), Handler.requests)
+        self.assertNotIn("/done?utm_source=mail&k=1", Handler.requests, "the site never sees the tracking tag")
+        self.assertTrue(spin(lambda: win.stats["params"] == before + 1, 3), "counted for the Privacy Report")
+        win.on_clearurls_toggled(False)
+        self.addCleanup(win.on_clearurls_toggled, True)
+        wv = self.load("/menu", "menu")
+        js(wv, "document.getElementById('link').click()")
+        self.assertTrue(spin(lambda: "/done?utm_source=mail&k=1" in Handler.requests, 8), "the switch turns it off")
+
+    def test_clicked_plain_http_link_is_upgraded_before_it_is_sent(self):
+        win = self.win
+        self.assertTrue(spin(lambda: win.https_filter is not None, 5), "HTTPS rules never compiled")
+        before = win.stats["https"]
+        wv = self.load("/clicklinks", "clicklinks")
+        js(wv, "document.getElementById('plain').click()")
+        self.assertTrue(spin(lambda: "Secure connection unavailable" in (js(wv, "document.body.innerText") or ""), 15))
+        self.assertEqual(wv.get_uri(), "https://arrow-https-test.invalid/page", "upgraded by WebKit, then warned")
+        self.assertEqual(win.stats["https"], before + 1)
+        self.assertEqual(js(wv, "location.origin"), "null", "the warning isn't that site's page")
+        self.addCleanup(win._compile_https_filter)
+        self.addCleanup(win._http_allowed_hosts.discard, "arrow-https-test.invalid")
+        wv.load_uri(js(wv, "document.querySelector('a.alt').href"))  # "Continue to HTTP"
+        self.assertTrue(spin(lambda: (wv.get_uri() or "") == "http://arrow-https-test.invalid/page"
+                             and "didn't load" in (js(wv, "document.body.innerText") or ""), 15),
+                        f"WebKit upgraded the address again: {wv.get_uri()}")
+
+    def test_clicked_link_to_a_lookalike_bank_is_stopped_before_it_is_sent(self):
+        wv = self.load("/clicklinks", "clicklinks")
+        js(wv, "document.getElementById('fake').click()")
+        self.assertTrue(spin(lambda: "This may be a fake site" in (js(wv, "document.body.innerText") or ""), 8),
+                        "a clicked link used to slip past the check (the view still reported the old address)")
+        self.assertEqual(wv.get_uri(), "https://hdfc-netbanking.invalid/login")
+        self.assertEqual(js(wv, "location.origin"), "null", "nothing from that site can read the one-time token")
+
+    def test_hidden_frame_cannot_save_a_file_the_server_didnt_send_as_a_download(self):
+        folder = tempfile.mkdtemp(dir=_HOME)
+        self.win.download_dir = folder
+        self.addCleanup(setattr, self.win, "download_dir", "")
+        before = len(self.win.downloads_history)
+        self.load("/blobframe", "blobframe")
+        self.assertTrue(spin(lambda: Handler.hits.get("/blob.bin", 0) > 0, 5))
+        spin(lambda: False, 1)
+        self.assertEqual(len(self.win.downloads_history), before, "a hidden frame started a download")
+        self.win.get_active_webview().load_uri(self.base + "/blob.bin")  # opened as the page: saved
+        self.assertTrue(spin(lambda: len(self.win.downloads_history) == before + 1, 5))
+
+    def test_typed_file_address_opens_the_file(self):
+        path = os.path.join(_HOME, "typed page.html")
+        with open(path, "w") as f:
+            f.write("<html><title>typed-file</title></html>")
+        win = self.win
+        win.url_entry.set_text(GLib.filename_to_uri(path))
+        win.on_url_activate(win.url_entry)
+        wv = win.get_active_webview()
+        self.assertTrue(spin(lambda: wv.get_title() == "typed-file", 8), wv.get_uri())
 
     def test_script_redirect_to_dead_site_shows_error_page_instead_of_retrying_forever(self):
         # After the failed redirect, WebKit's URI goes back to the redirecting page (not empty), which used to
@@ -1496,6 +1571,59 @@ class WindowFeatureTests(unittest.TestCase):
         wv = self.load("/hiding", "hiding")
         self.assertEqual(js(wv, shown), "[true,true,true,true]", "nothing hidden where ad blocking is off")
 
+    def test_switching_list_updates_off_drops_the_downloaded_list(self):
+        win = self.win
+        self.assertTrue(spin(lambda: win._content_filter_rank > 0, 30), "the test list never compiled")
+        self.addCleanup(lambda: spin(lambda: win._content_filter_rank > 0, 30))
+        self.addCleanup(win.on_tracker_lists_toggled, True)
+        win.on_tracker_lists_toggled(False)
+        self.assertTrue(spin(lambda: win._content_filter_rank == 0, 30),
+                        "the bigger downloaded list stayed on (a smaller filter was never installed)")
+        win.on_tracker_lists_toggled(True)
+        self.assertTrue(spin(lambda: win._content_filter_rank > 0, 30))
+
+    def test_cookie_banner_switch_downloads_only_a_missing_cookie_list(self):
+        win = self.win
+        calls = []
+        win.refresh_tracker_list_async = lambda *args, **kwargs: calls.append(kwargs)
+        self.addCleanup(delattr, win, "refresh_tracker_list_async")
+        self.addCleanup(win.on_hide_cookie_banners_toggled, win.hide_cookie_banners)
+        path = bb.COSMETIC_CACHES["cookies"]
+        if os.path.exists(path):
+            os.remove(path)
+        win.on_hide_cookie_banners_toggled(False)
+        win.on_hide_cookie_banners_toggled(True)
+        self.assertEqual(calls, [{"lists": False, "url_rules": False, "cookie_list": True}], "only the cookie list")
+        with open(path, "w") as f:
+            json.dump({"generic": [], "exceptions": {}, "specific": []}, f)  # there, but it never compiled
+        self.addCleanup(os.remove, path)
+        win.on_hide_cookie_banners_toggled(False)
+        win.on_hide_cookie_banners_toggled(True)
+        self.assertEqual(len(calls), 1, "a list that's there isn't downloaded again")
+
+    def test_password_import_stops_when_the_keyring_stays_locked(self):
+        class LockedSecrets(FakeSecrets):
+            def __init__(self):
+                super().__init__()
+                self.unlock_refused, self.tries = False, 0
+
+            def store(self, host, user, password):
+                self.tries += 1
+                self.unlock_refused = True  # the user closed the unlock dialog
+                return False
+
+        win = self.win
+        win.secrets = LockedSecrets()
+        self.addCleanup(setattr, win, "secrets", FakeSecrets())
+        status = Gtk.Label()
+        logins = [{"host": f"s{i}.example", "username": "u", "password": "p"} for i in range(30)]
+        offered = []
+        win.save_imported_logins(logins, "passwords.csv", status, lambda: offered.append(1))
+        self.assertTrue(spin(lambda: "stayed locked" in status.get_text(), 5), status.get_text())
+        self.assertEqual(win.secrets.tries, 1, "asked to unlock once, not once per login")
+        self.assertIn("other 30 weren't saved", status.get_text())
+        self.assertEqual(offered, [], "nothing saved: no offer to delete the file")
+
     # ---- pop-up blocker ---------------------------------------------------
     def popup_page(self, adblock=True):
         """The /popups page in a tab in front. A script's click() on its elements counts as the user's click,
@@ -1739,6 +1867,26 @@ class WindowFeatureTests(unittest.TestCase):
         self.assertEqual(Handler.hits.get("/done", 0), 0, "and it was not reloaded")
         self.win.close_tab(popup_tab)
         self.assertEqual(opener._arrow_related, {opener})
+
+    def test_tab_a_page_opened_keeps_its_prompts_after_the_opener_closes(self):
+        # The tabs share one content manager; its message handlers used to be cut when the opener tab closed.
+        self.addCleanup(self.close_new_tabs, self.win._tab_boxes())
+        opener_tab = self.open_tab("/done", "done")
+        opener = opener_tab._arrow_webview
+        popup = self.win.on_create_webview(opener, None)
+        popup.load_uri(self.base + "/blank")
+        self.assertTrue(spin(lambda: popup.get_title() == "blank", 10))
+        ucm = popup.get_user_content_manager()
+        self.assertTrue(ucm == opener.get_user_content_manager(), "the tabs share a content manager")
+        self.win.close_tab(opener_tab)
+        for name in ("_arrow_pw_handler", "_arrow_failed_handler", "_arrow_links_handler"):
+            self.assertTrue(ucm.handler_is_connected(getattr(ucm, name)), name)
+        self.win.notebook.set_current_page(self.win.notebook.page_num(self.win._tab_boxes()[-1]))
+        popup.run_javascript_in_world("window.webkit.messageHandlers.arrowPw.postMessage("
+                                      "{type: 'submit', user: 'bob', pass: 'pw1', url: location.href})",
+                                      "arrow-pw", None, None, None)
+        self.assertTrue(spin(lambda: "Save the password for bob" in self.infobar_text(), 5), self.infobar_text())
+        self.win._clear_infobar()
 
     def test_tab_on_screen_reloads_if_its_renderer_is_ended(self):
         wv = self.load("/done", wait_title="done")

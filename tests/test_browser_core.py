@@ -244,6 +244,50 @@ class UrlHelperTests(unittest.TestCase):
         self.assertEqual(bb.summarize_blocked(urls, page, lists),
                          (3, [("doubleclick.net", 2), ("cdn.tracker.example", 1)]))
 
+    def test_tracker_sites_of_their_own_can_still_be_visited(self):
+        rules = json.loads(bb.build_content_blocker_rules_json())
+
+        def triggers(domain):
+            return [r["trigger"] for r in rules if r["action"]["type"] == "block"
+                    and r["trigger"]["url-filter"].startswith("^https?://([a-z0-9-]+\\.)*" + bb.re.escape(domain))]
+
+        for t in triggers("sentry.io") + triggers("doubleclick.net"):
+            self.assertEqual(t.get("load-type"), ["third-party"], "visiting the site itself is never blocked")
+        for t in triggers("analytics.twitter.com"):
+            self.assertNotIn("load-type", t, "a tracking host of a bigger site is blocked on that site too")
+        self.assertTrue(triggers("sentry.io") and triggers("analytics.twitter.com"))
+        self.assertFalse(bb.blocked_by_rules("https://sentry.io/app.js", "sentry.io"), "the site's own page")
+        self.assertFalse(bb.blocked_by_rules("https://cdn.sentry.io/app.js", "docs.sentry.io"))
+        self.assertTrue(bb.blocked_by_rules("https://browser.sentry.io/a.js", "news.example.com"), "as a third party")
+        self.assertTrue(bb.blocked_by_rules("https://analytics.twitter.com/p", "twitter.com"))
+
+    def test_https_rules_upgrade_links_but_not_local_or_allowed_hosts(self):
+        rules = json.loads(bb.build_https_rules_json({"plain.example"}))
+        self.assertEqual(rules[0], {"trigger": {"url-filter": "^http://", "resource-type": ["document"]},
+                                    "action": {"type": "make-https"}})
+        self.assertTrue(all(r["action"]["type"] == "ignore-previous-rules" for r in rules[1:]))
+        for r in rules:
+            self.assertNotIn("|", r["trigger"]["url-filter"], "WebKit content rules do not support alternation")
+        exceptions = [bb.re.compile(r["trigger"]["url-filter"], bb.re.I) for r in rules[1:]]
+        hosts = ("localhost", "printer", "nas.local", "my.lan", "box.home", "a.internal", "pc.localdomain",
+                 "127.0.0.1", "10.1.2.3", "192.168.1.1", "172.16.0.1", "172.31.9.9", "169.254.1.1",
+                 "example.com", "news.local.example.com", "172.32.0.1", "8.8.8.8", "lan.example.org", "plain.example")
+        for host in hosts:
+            local = bb.is_local_network_host(host) or host == "plain.example"
+            for url in (f"http://{host}/", f"http://{host}:8080/x"):
+                self.assertEqual(any(e.match(url) for e in exceptions), local, url)
+
+    def test_link_cleaning_script_carries_the_rules(self):
+        providers = {"b": {"urlPattern": "^https?://b\\.example", "rules": ["ref", 5], "redirections": "x"},
+                     "a": {"urlPattern": "^https?://a\\.example", "exceptions": ["^https?://a\\.example/keep"]},
+                     "bad": {"rules": ["x"]}, "odd": "not a provider"}
+        js_text = bb.link_clean_js(providers)
+        self.assertNotIn("__ARROW_", js_text)
+        compact = json.loads(js_text.split("const PROVIDERS = ", 1)[1].split(", BUILTIN", 1)[0])
+        self.assertEqual(compact, [["^https?://a\\.example", ["^https?://a\\.example/keep"], [], [], []],
+                                   ["^https?://b\\.example", [], ["ref"], [], []]], "sorted like compile_url_rules")
+        self.assertIn('"fbclid"', js_text)
+
     def test_memory_text(self):
         self.assertEqual(bb.format_memory_mb(None), "—")
         self.assertEqual(bb.format_memory_mb(51.4), "51 MB")
@@ -846,6 +890,21 @@ class TrackerListFetchTests(TmpDirCase):
         with open(bb.COSMETIC_CACHES["cookies"]) as f:
             self.assertEqual(len(json.load(f)["generic"]), 120)
 
+    def test_cookie_list_alone(self):
+        write_json(bb.COSMETIC_CACHES["cookies"], {"generic": ["old"], "exceptions": {}, "specific": []})
+        few = os.path.join(self.tmp, "few.txt")
+        write_text(few, "##.consent")
+        with self.assertRaises(ValueError):
+            bb.fetch_cookie_list("file://" + few)
+        with open(bb.COSMETIC_CACHES["cookies"]) as f:
+            self.assertEqual(json.load(f)["generic"], ["old"], "a list that looks wrong keeps the old copy")
+        good = os.path.join(self.tmp, "cookies.txt")
+        write_text(good, "\n".join(f"##.consent-{i}" for i in range(120)))
+        bb.fetch_cookie_list("file://" + good)
+        with open(bb.COSMETIC_CACHES["cookies"]) as f:
+            self.assertEqual(len(json.load(f)["generic"]), 120)
+        self.assertFalse(os.path.exists(bb.TRACKER_LIST_CACHE), "the big lists aren't fetched for it")
+
     def test_one_bad_list_keeps_the_old_cache(self):
         write_json(bb.TRACKER_LIST_CACHE, {"fetched": 5, "domains": ["old.example"]})
         good = self.list_url("easyprivacy.txt", [f"t{i}.example" for i in range(150)])
@@ -1089,6 +1148,34 @@ class SecretServiceTests(unittest.TestCase):
                 for f in client.find(host):
                     client.delete(f["item"])
 
+    def test_a_refused_unlock_is_remembered_and_asked_once_for_all_names(self):
+        """A locked keyring whose unlock dialog the user closes: the client says so, and a search of both the
+        current and the old application name shows the dialog once, not once per name."""
+        client = bb.SecretServiceClient(application="arrow-browser-test", legacy_applications=("old-name",))
+        client.available = lambda: True
+        client._session, client._collection = "/s", "/c"
+        prompts, unlocks = [], []
+
+        def call(path, iface, method, params, reply_type):
+            if method == "Get":
+                return bb.GLib.Variant("(v)", (bb.GLib.Variant("b", True),))
+            if method == "SearchItems":
+                app = params.unpack()[0]["application"]
+                return bb.GLib.Variant("(aoao)", ([], ["/item/" + app.replace("-", "_")]))
+            if method == "Unlock":
+                unlocks.append(params.unpack()[0])
+                return bb.GLib.Variant("(aoo)", ([], "/prompt/1"))
+            raise AssertionError(method)
+
+        client._call = call
+        client._run_prompt = lambda path: prompts.append(path) or False  # the user closes the dialog
+        self.assertFalse(client.store("x.example", "alice", "pw"))
+        self.assertTrue(client.unlock_refused)
+        self.assertEqual(client.error, "the keyring wasn't unlocked")
+        self.assertEqual(client.find(), [])
+        self.assertEqual(unlocks[-1], ["/item/arrow_browser_test", "/item/old_name"], "one dialog for both names")
+        self.assertEqual(len(prompts), 2, "one for the store, one for the search")
+
     def test_roundtrip_against_real_keyring(self):
         client = bb.SecretServiceClient(application="arrow-browser-test")
         if not client.available():
@@ -1257,8 +1344,10 @@ class SearchTests(unittest.TestCase):
         for text in ("example.com", "example.com/path?q=1", "node.js", "localhost", "localhost:3000/app",
                      "printer:631", "router/", "192.168.1.1", "10.0.0.5:8080/admin", "my.lan"):
             self.assertTrue(bb.typed_text_is_address(text), text)
-        for text in ("weather", "python", "facebook", "cricket score", "2.5", "what:is", "", "a .b"):
+        for text in ("weather", "python", "facebook", "cricket score", "2.5", "what:is", "", "a .b",
+                     "file:///home/me/page.html", "data:text/html,x", "view-source:https://x.example", "mailto:a@b.c"):
             self.assertFalse(bb.typed_text_is_address(text), text)
+        self.assertTrue(bb.typed_text_is_address("example.com:8080/x"))
 
     def test_search_templates_from_users(self):
         self.assertEqual(bb.normalize_search_template(" https://x.example/s?q=%s "), "https://x.example/s?q={query}")
