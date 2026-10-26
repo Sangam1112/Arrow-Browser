@@ -2550,6 +2550,38 @@ class WindowFeatureTests(unittest.TestCase):
         win.set_ui_theme("neon")
         self.assertEqual(win.ui_theme, "dark", "unknown themes are ignored")
 
+    def test_toolbar_icons_are_line_icons_in_the_buttons_colour(self):
+        win = self.win
+        self.addCleanup(win.set_ui_theme, "dark")
+        buttons = (win.btn_back, win.btn_forward, win.btn_reload, win.btn_new_tab, win.btn_screenshot,
+                   win.btn_bookmarks, win.btn_downloads, win.btn_shield, win.btn_settings)
+        for button in buttons:
+            self.assertIsInstance(button.get_image(), bb.LineIcon)
+            self.assertIsNotNone(button.get_image().get_property("surface"), "drawn")
+        self.assertEqual(win.btn_bookmarks.get_image()._shapes, bb.TOOLBAR_ICONS["book-marked"],
+                         "not a second star next to the address bar's")
+
+        def drawn(button):
+            return button.get_image()._drawn[2]  # the colour the icon was last drawn in
+
+        def text_colour(button):
+            c = button.get_style_context().get_color(button.get_state_flags())
+            return "#%02x%02x%02x" % tuple(round(v * 255) for v in (c.red, c.green, c.blue))
+
+        dark = {b: drawn(b) for b in (win.btn_back, win.btn_shield)}
+        win.set_ui_theme("light")
+        spin(lambda: False, 0.2)
+        for button in (win.btn_back, win.btn_shield):
+            self.assertNotEqual(drawn(button), dark[button], "redrawn for the light theme")
+            self.assertEqual(drawn(button), text_colour(button))
+        self.assertNotEqual(drawn(win.btn_back), drawn(win.btn_shield), "the shield keeps its own green")
+        win.btn_back.set_state_flags(Gtk.StateFlags.PRELIGHT, False)  # hover
+        try:
+            spin(lambda: False, 0.3)  # past the colour transition
+            self.assertEqual(drawn(win.btn_back), text_colour(win.btn_back), "follows hover")
+        finally:
+            win.btn_back.unset_state_flags(Gtk.StateFlags.PRELIGHT)
+
     # ---- search ----------------------------------------------------------
     def test_search_shortcuts_and_own_search_engines(self):
         win = self.win

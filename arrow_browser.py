@@ -361,6 +361,19 @@ def icon_name_for(emoji):
     return ICON_FOR_EMOJI.get((emoji or "").replace("\ufe0f", "").strip())
 
 
+def svg_icon_surface(svg, size, scale):
+    """A cairo surface of `svg` drawn at size×size logical pixels, or None if it can't be drawn."""
+    try:
+        loader = GdkPixbuf.PixbufLoader.new_with_type("svg")
+        loader.set_size(size * scale, size * scale)
+        loader.write(svg.encode("utf-8"))
+        loader.close()
+        return Gdk.cairo_surface_create_from_pixbuf(loader.get_pixbuf(), scale, None)
+    except Exception as e:
+        print("Icon load note:", e)
+        return None
+
+
 def ui_icon(name, tone="accent", size=18):
     """A Gtk.Image of a bundled line icon in the current theme's `tone` colour, or None if it can't be drawn."""
     path = name and asset_path("icons", f"{name}.svg")
@@ -375,16 +388,80 @@ def ui_icon(name, tone="accent", size=18):
         try:
             with open(path, encoding="utf-8") as f:
                 svg = f.read().replace("currentColor", color)
-            loader = GdkPixbuf.PixbufLoader.new_with_type("svg")
-            loader.set_size(size * scale, size * scale)
-            loader.write(svg.encode("utf-8"))
-            loader.close()
-            _ICON_SURFACES[key] = Gdk.cairo_surface_create_from_pixbuf(loader.get_pixbuf(), scale, None)
-        except Exception as e:
+        except OSError as e:
             print("Icon load note:", e)
-            _ICON_SURFACES[key] = None
+            svg = None
+        _ICON_SURFACES[key] = svg and svg_icon_surface(svg, size, scale)
     surface = _ICON_SURFACES[key]
     return Gtk.Image.new_from_surface(surface) if surface else None
+
+
+# The toolbar's icons, from the same Lucide set. They live in the script rather than assets/icons: an install
+# that updates itself downloads only this file.
+TOOLBAR_ICONS = {
+    "arrow-left": '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+    "arrow-right": '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+    "rotate-cw": '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
+    "plus": '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    "camera": '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>'
+              '<circle cx="12" cy="13" r="3"/>',
+    "book-marked": '<path d="M10 2v8l3-3 3 3V2"/><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 '
+                   '1H6.5a1 1 0 0 1 0-5H20"/>',
+    "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/>'
+                '<line x1="12" x2="12" y1="15" y2="3"/>',
+    "shield": '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 '
+              '6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+    "ellipsis-vertical": '<circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/>',
+}
+TOOLBAR_ICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" '
+                    'stroke="{color}" stroke-opacity="{opacity}" stroke-width="2" stroke-linecap="round" '
+                    'stroke-linejoin="round">{shapes}</svg>')
+_LINE_ICON_SURFACES = {}
+
+
+class LineIcon(Gtk.Image):
+    """A toolbar icon drawn in its button's current text colour, so it follows hover, the light/dark switch and
+    the download-done highlight the way a theme's symbolic icon does. GTK can only recolour filled symbolic SVGs;
+    Lucide's are drawn with lines."""
+
+    def __init__(self, name, size=18):
+        super().__init__()
+        self._shapes = TOOLBAR_ICONS[name]
+        self._size = size
+        self._drawn = None
+        self.connect("style-updated", self._redraw)
+        self.connect("state-flags-changed", self._redraw)
+        self.connect("notify::scale-factor", self._redraw)
+        self._redraw()
+
+    def _redraw(self, *_args):
+        rgba = self.get_style_context().get_color(self.get_state_flags())
+        color = "#%02x%02x%02x" % tuple(round(c * 255) for c in (rgba.red, rgba.green, rgba.blue))
+        key = (self._shapes, self._size, color, round(rgba.alpha, 2), self.get_scale_factor())
+        if key == self._drawn:
+            return
+        self._drawn = key
+        if key not in _LINE_ICON_SURFACES:
+            if len(_LINE_ICON_SURFACES) > 96:  # colour transitions pass through many shades
+                _LINE_ICON_SURFACES.clear()
+            svg = TOOLBAR_ICON_SVG.format(color=color, opacity=key[3], shapes=self._shapes)
+            _LINE_ICON_SURFACES[key] = svg_icon_surface(svg, self._size, key[4])
+        surface = _LINE_ICON_SURFACES[key]
+        if surface is not None:
+            self.set_from_surface(surface)
+
+
+def line_icon_button(icon, tooltip, css_class="flat-icon-btn"):
+    button = Gtk.Button()
+    image = LineIcon(icon)
+    image.show()  # also when the button is no-show-all (Downloads)
+    button.set_image(image)
+    button.set_always_show_image(True)
+    style = button.get_style_context()
+    style.add_class("image-button")
+    style.add_class(css_class)
+    button.set_tooltip_text(tooltip)
+    return button
 
 
 def with_ui_font(page):
@@ -4380,21 +4457,15 @@ class ArrowBrowserWindow(Gtk.Window):
         nav_group = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         nav_group.get_style_context().add_class("nav-group")
 
-        self.btn_back = Gtk.Button.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.BUTTON)
-        self.btn_back.get_style_context().add_class("flat-icon-btn")
-        self.btn_back.set_tooltip_text("Back")
+        self.btn_back = line_icon_button("arrow-left", "Back")
         self.btn_back.connect("clicked", self.on_back_clicked)
         nav_group.pack_start(self.btn_back, False, False, 0)
 
-        self.btn_forward = Gtk.Button.new_from_icon_name("go-next-symbolic", Gtk.IconSize.BUTTON)
-        self.btn_forward.get_style_context().add_class("flat-icon-btn")
-        self.btn_forward.set_tooltip_text("Forward")
+        self.btn_forward = line_icon_button("arrow-right", "Forward")
         self.btn_forward.connect("clicked", self.on_forward_clicked)
         nav_group.pack_start(self.btn_forward, False, False, 0)
 
-        self.btn_reload = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
-        self.btn_reload.get_style_context().add_class("flat-icon-btn")
-        self.btn_reload.set_tooltip_text("Reload Page")
+        self.btn_reload = line_icon_button("rotate-cw", "Reload Page")
         self.btn_reload.connect("clicked", self.on_reload_clicked)
         nav_group.pack_start(self.btn_reload, False, False, 0)
 
@@ -4442,9 +4513,7 @@ class ArrowBrowserWindow(Gtk.Window):
         self.url_entry.set_completion(completion)
 
         # New Tab Button
-        self.btn_new_tab = Gtk.Button.new_from_icon_name("tab-new-symbolic", Gtk.IconSize.BUTTON)
-        self.btn_new_tab.get_style_context().add_class("flat-icon-btn")
-        self.btn_new_tab.set_tooltip_text("New Tab (Ctrl+T)")
+        self.btn_new_tab = line_icon_button("plus", "New Tab (Ctrl+T)")
         self.btn_new_tab.connect("clicked", lambda b: self.create_new_tab(self.homepage))
         top_bar.pack_start(self.btn_new_tab, False, False, 0)
 
@@ -4452,21 +4521,16 @@ class ArrowBrowserWindow(Gtk.Window):
         action_group = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         action_group.get_style_context().add_class("nav-group")
 
-        self.btn_screenshot = Gtk.Button.new_from_icon_name("camera-photo-symbolic", Gtk.IconSize.BUTTON)
-        self.btn_screenshot.get_style_context().add_class("flat-icon-btn")
-        self.btn_screenshot.set_tooltip_text("Take Webpage Screenshot")
+        self.btn_screenshot = line_icon_button("camera", "Take Webpage Screenshot")
         self.btn_screenshot.connect("clicked", self.on_screenshot_clicked)
         action_group.pack_start(self.btn_screenshot, False, False, 0)
 
-        self.btn_bookmarks = Gtk.Button.new_from_icon_name("user-bookmarks-symbolic", Gtk.IconSize.BUTTON)
-        self.btn_bookmarks.get_style_context().add_class("flat-icon-btn")
-        self.btn_bookmarks.set_tooltip_text("Bookmark Manager (Ctrl+Shift+O)")
+        # a bookmark list, not a star: the star in the address bar bookmarks the page
+        self.btn_bookmarks = line_icon_button("book-marked", "Bookmark Manager (Ctrl+Shift+O)")
         self.btn_bookmarks.connect("clicked", lambda b: self.open_bookmark_manager())
         action_group.pack_start(self.btn_bookmarks, False, False, 0)
 
-        self.btn_downloads = Gtk.Button.new_from_icon_name("folder-download-symbolic", Gtk.IconSize.BUTTON)
-        self.btn_downloads.get_style_context().add_class("flat-icon-btn")
-        self.btn_downloads.set_tooltip_text(self.DOWNLOADS_TOOLTIP)
+        self.btn_downloads = line_icon_button("download", self.DOWNLOADS_TOOLTIP)
         self.btn_downloads.connect("clicked", self.on_downloads_clicked)
         # shown only while there's a download to see (see _update_downloads_button); Ctrl+J and the menu always work
         self.btn_downloads.set_no_show_all(True)
@@ -4475,15 +4539,11 @@ class ArrowBrowserWindow(Gtk.Window):
 
         top_bar.pack_start(action_group, False, False, 0)
 
-        self.btn_shield = Gtk.Button(label="🛡")
-        self.btn_shield.get_style_context().add_class("btn-shield")
-        self.btn_shield.set_tooltip_text("Ad & tracker shield — click for your Privacy Report")
+        self.btn_shield = line_icon_button("shield", "Ad & tracker shield — click for your Privacy Report", "btn-shield")
         self.btn_shield.connect("clicked", lambda b: self.open_privacy_report())
         top_bar.pack_start(self.btn_shield, False, False, 0)
 
-        self.btn_settings = Gtk.Button.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON)
-        self.btn_settings.get_style_context().add_class("flat-icon-btn")
-        self.btn_settings.set_tooltip_text("Menu")
+        self.btn_settings = line_icon_button("ellipsis-vertical", "Menu")
         self.btn_settings.connect("clicked", self.show_main_menu)
         top_bar.pack_start(self.btn_settings, False, False, 0)
 
@@ -5085,9 +5145,7 @@ class ArrowBrowserWindow(Gtk.Window):
             background: rgba(52, 211, 153, 0.10);
             color: #34d399;
             border: 1px solid rgba(52, 211, 153, 0.28);
-            font-weight: 600;
-            font-size: 11px;
-            padding: 5px 12px;
+            padding: 4px 9px;
         }
         .btn-shield:hover {
             background: rgba(52, 211, 153, 0.18);
