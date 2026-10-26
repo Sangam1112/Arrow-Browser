@@ -1,7 +1,7 @@
 {
   "name": "arrow-browser",
   "license": "GPL-3.0-or-later",
-  "version": "1.0.4",
-  "sha256": "d017a62c99efbff06de61d75c69586a6e10e00a95f79addee12ef03978dbd8cd",
-  "signature": "c63e16d8b555bfb8a2ce8d9f7768f35e54fd69cc61a84b8695640c23a8ccdf99fe9a56c9e5e3e1b417a38bc36ca8b63aec0e40cba23f66a1c21e8fde90ddb309"
+  "version": "1.0.5",
+  "sha256": "2eff54a9b9cf7f7f34948c9bb9490f588337fbc18dd526c182a6f5571e0ac49a",
+  "signature": "70c1e44505c5531f12573d5a957d81c2541f1b8a1e1147a3f254c8a80ce3ec1e610e4e46033f083797a0655d03ec7283aa82de0d6be55c98bbddb0c21cc13906"
 }

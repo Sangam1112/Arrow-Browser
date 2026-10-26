@@ -78,6 +78,8 @@ python3 -m py_compile /usr/share/arrow-browser/arrow_browser.py >/dev/null 2>&1 
 if [ \$1 -eq 0 ]; then rm -rf /usr/share/arrow-browser/__pycache__; fi
 
 %changelog
+* Mon Oct 26 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.5-1
+- Flatpak build for Flathub; mouse-wheel scrolling fixed on some sites; file pickers use the desktop's chooser
 * Mon Oct 26 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.4-1
 - Link-click pings blocked; Global Privacy Control sent to sites
 * Sun Oct 25 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.3-1

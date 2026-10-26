@@ -4,6 +4,17 @@ All notable changes to Arrow Browser. Versions follow `MAJOR.MINOR.PATCH`.
 Releases are signed; the in-app updater only installs a release whose signature verifies.
 Notes from before 1.0.0 (Bharat Browser, and Arrow up to 1.6.9 in the old repository) are in [docs/HISTORY.md](docs/HISTORY.md).
 
+## [1.0.5] - 2026-10-26
+
+### Added
+- **Arrow can now be built as a Flatpak, for Flathub.** The recipe and store page are in `flatpak/`. Inside a Flatpak, Arrow keeps its profile in the app's own folder (`~/.var/app/io.github.Sangam1112.Arrow-Browser`), every web page runs in its own Flatpak sandbox, and Flathub delivers the updates, so the built-in updater stays off there. Screenshots go to Downloads, because a Flatpak can't reach the Desktop folder. The Flatpak uses the GNOME runtime's WebKit, which usually gets security fixes sooner than Ubuntu's.
+
+### Fixed
+- **The mouse wheel and touchpad didn't scroll some sites at all**, such as mindrift.ai. A page that turns off the bounce at its ends and also listens for the wheel froze scrolling in the engine. Arrow now keeps up-and-down scrolling working on such pages; sideways stays as the site set it.
+
+### Changed
+- **File pickers use your desktop's own file chooser.** Importing, backing up, Save Page As and choosing the download folder now open the same chooser as your other apps (in the Flatpak, the only one that can reach every folder).
+
 ## [1.0.4] - 2026-10-26
 
 ### Added
