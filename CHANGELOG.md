@@ -4,6 +4,19 @@ All notable changes to Arrow Browser. Versions follow `MAJOR.MINOR.PATCH`.
 Releases are signed; the in-app updater only installs a release whose signature verifies.
 Notes from before 1.0.0 (Bharat Browser, and Arrow up to 1.6.9 in the old repository) are in [docs/HISTORY.md](docs/HISTORY.md).
 
+## [1.0.4] - 2026-10-26
+
+### Added
+- **Sites are told not to sell or share your data (Global Privacy Control).** Every page and frame sees `navigator.globalPrivacyControl` set to on, the signal that laws such as California's CCPA make sites honour. Arrow can only send it to the page's scripts, not as the `Sec-GPC` request header.
+
+### Changed
+- **The toolbar's buttons got a cleaner, matching set of icons.** They came from your desktop's icon theme, so back, forward and reload were thin outlines while the camera, bookmarks and new-tab icons were heavy and filled, and they looked different on every Linux desktop. All toolbar buttons now use Arrow's own line icons, the same family as in Settings, and they follow the light and dark theme and hover.
+- **The shield button shows a real shield.** It was a small emoji that was hard to see, especially in the dark theme.
+- **The Bookmark Manager button no longer looks like the address bar's star.** Two identical stars sat side by side; the manager now has a bookmark-book icon, and the star in the address bar still bookmarks the page.
+
+### Fixed
+- **Clicking a link could quietly report the click to a tracker.** A link with a `ping` attribute sends a report to an address the page picks when you click it. The engine's switch for turning this off no longer does anything, so Arrow's tracker blocker now stops every such report. It follows "Block ads and trackers", like the rest of the blocker.
+
 ## [1.0.3] - 2026-10-25
 
 ### Fixed
