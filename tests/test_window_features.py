@@ -1144,15 +1144,22 @@ class WindowFeatureTests(unittest.TestCase):
           x.globalCompositeOperation='copy';var d=x.getImageData(0,0,2,2).data;return d[0]+','+d[1];})()"""), "255,0")
 
     def test_link_clicks_send_no_ping_and_pages_see_global_privacy_control(self):
-        wv = self.load("/pinglink", "pinglink")
-        self.assertEqual(js(wv, "String(navigator.globalPrivacyControl)"), "true")
-        self.assertEqual(js(wv, "String(document.getElementById('f').contentWindow.navigator.globalPrivacyControl)"),
-                         "true", "frames get it too")
-        self.assertEqual(js(wv, "String(Object.keys(Navigator.prototype).includes('globalPrivacyControl'))"), "true")
-        js(wv, "document.getElementById('l').click()")
-        self.assertTrue(spin(lambda: (wv.get_uri() or "").endswith("/thin") and not wv.is_loading(), 5))
-        spin(lambda: False, 0.5)  # give a ping time to arrive
-        self.assertNotIn("POST /pinged", Handler.requests)
+        # In a tab of its own: the main tab is left alone (a later GPU-off pop-up test can otherwise freeze it).
+        before = self.win._tab_boxes()
+        try:
+            wv = self.open_tab("/pinglink", "pinglink")._arrow_webview
+            self.assertEqual(js(wv, "String(navigator.globalPrivacyControl)"), "true")
+            self.assertEqual(js(wv, "String(document.getElementById('f').contentWindow.navigator.globalPrivacyControl)"),
+                             "true", "frames get it too")
+            self.assertEqual(js(wv, "String(Object.keys(Navigator.prototype).includes('globalPrivacyControl'))"), "true")
+            js(wv, "document.getElementById('l').click()")
+            self.assertTrue(spin(lambda: (wv.get_uri() or "").endswith("/thin") and not wv.is_loading(), 5))
+            spin(lambda: False, 0.5)  # give a ping time to arrive
+            self.assertNotIn("POST /pinged", Handler.requests)
+            js(wv, "navigator.sendBeacon('/beacon', 'x')")
+            self.assertTrue(spin(lambda: "POST /beacon" in Handler.requests, 3), "only <a ping> is blocked, not beacons")
+        finally:
+            self.close_new_tabs(before)
 
     def test_farbling_exemptions_match_whole_domains(self):
         wv = self.load("/blank")
