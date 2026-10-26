@@ -48,6 +48,8 @@ PAGES = {
     "/blank": "<html><title>blank</title></html>",
     "/article": ARTICLE,
     "/thin": "<html><title>thin</title><body><p>short</p></body></html>",
+    "/pinglink": "<html><title>pinglink</title><body><a id='l' href='/thin' ping='/pinged'>go</a>"
+                 "<iframe id='f' src='/blank'></iframe></body></html>",
     "/login": ("<html><title>login</title><body><form action='/done' method='get'>"
                "<input id='u' type='text' name='user'><input id='p' type='password' name='pw'>"
                "<button id='go' type='submit'>Sign in</button></form></body></html>"),
@@ -246,6 +248,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+
+def _record_post(self):  # <a ping> reports arrive as POSTs
+    Handler.requests.append("POST " + self.path)
+    self.send_response(204)
+    self.end_headers()
+
+
+Handler.do_POST = _record_post
 
 
 class TLSServer(http.server.ThreadingHTTPServer):
@@ -1131,6 +1142,17 @@ class WindowFeatureTests(unittest.TestCase):
         self.assertEqual(js(wv, """(function(){var c=document.createElement('canvas');c.width=20;c.height=20;
           var x=c.getContext('2d');x.fillStyle='#ff0000';x.fillRect(0,0,20,20);c.toDataURL();
           x.globalCompositeOperation='copy';var d=x.getImageData(0,0,2,2).data;return d[0]+','+d[1];})()"""), "255,0")
+
+    def test_link_clicks_send_no_ping_and_pages_see_global_privacy_control(self):
+        wv = self.load("/pinglink", "pinglink")
+        self.assertEqual(js(wv, "String(navigator.globalPrivacyControl)"), "true")
+        self.assertEqual(js(wv, "String(document.getElementById('f').contentWindow.navigator.globalPrivacyControl)"),
+                         "true", "frames get it too")
+        self.assertEqual(js(wv, "String(Object.keys(Navigator.prototype).includes('globalPrivacyControl'))"), "true")
+        js(wv, "document.getElementById('l').click()")
+        self.assertTrue(spin(lambda: (wv.get_uri() or "").endswith("/thin") and not wv.is_loading(), 5))
+        spin(lambda: False, 0.5)  # give a ping time to arrive
+        self.assertNotIn("POST /pinged", Handler.requests)
 
     def test_farbling_exemptions_match_whole_domains(self):
         wv = self.load("/blank")

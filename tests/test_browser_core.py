@@ -170,7 +170,11 @@ class UrlHelperTests(unittest.TestCase):
         rules = json.loads(bb.build_content_blocker_rules_json())
         filters = [r["trigger"]["url-filter"] for r in rules if r["action"]["type"] == "block"]
         self.assertTrue(any("doubleclick" in f for f in filters))
-        paths = [r for r in rules if r["action"]["type"] == "block" and "resource-type" in r["trigger"]]
+        pings = [r for r in rules if r["trigger"].get("resource-type") == ["ping"]]
+        self.assertEqual([(r["trigger"]["url-filter"], r["action"]["type"]) for r in pings], [(".*", "block")],
+                         "<a ping> reports are blocked everywhere")
+        paths = [r for r in rules if r["action"]["type"] == "block" and "resource-type" in r["trigger"]
+                 and r not in pings]
         self.assertEqual(len(paths), len(bb.BLOCKED_PATH_SEGMENTS))
         for r in paths:
             self.assertNotIn("document", r["trigger"]["resource-type"], "page navigations are never blocked by path")

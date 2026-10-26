@@ -547,6 +547,9 @@ def build_content_blocker_rules_json(extra_domains=()):
         rules.append({"trigger": {"url-filter": pattern, "unless-domain": exempt,
                                   "resource-type": ["image", "style-sheet", "script", "font", "raw", "svg-document", "media"]},
                       "action": {"type": "block"}})
+    # 1b. <a ping>: a click on a link also reports it to an address the page chose. WebKitGTK 2.52 ignores its
+    #     enable-hyperlink-auditing setting (deprecated), so the reports are blocked here.
+    rules.append({"trigger": {"url-filter": ".*", "resource-type": ["ping"]}, "action": {"type": "block"}})
     # 2. Streaming manifests are never blocked by the path rules above.
     for ext in STREAMING_EXEMPT_EXTENSIONS:
         for tail in ("$", "\\?"):
@@ -3208,6 +3211,20 @@ FARBLING_EXEMPT = (
     ("hcaptcha.com", "/"),
     ("arkoselabs.com", "/"),  # Arkose / FunCaptcha (Microsoft, GitHub and Roblox sign-ups)
 )
+# Global Privacy Control (https://privacycg.github.io/gpc-spec/): tells every site not to sell or share the
+# person's data, which some laws (e.g. California's CCPA) make sites honour. Only the JavaScript side: WebKitGTK
+# has no UI-process API for adding the Sec-GPC request header.
+GPC_JS = r"""
+(function() {
+    if ('globalPrivacyControl' in Navigator.prototype) return;
+    Object.defineProperty(Navigator.prototype, 'globalPrivacyControl', {
+        get: function globalPrivacyControl() { return true; },
+        configurable: true,
+        enumerable: true,
+    });
+})();
+"""
+
 FARBLING_EXEMPT_JS = r"""(function(host, path) {
     host = host.toLowerCase();
     return __ARROW_FARBLE_EXEMPT__.some(([domain, prefix]) =>
@@ -4509,6 +4526,12 @@ class ArrowBrowserWindow(Gtk.Window):
             WebKit2.UserScriptInjectionTime.START,
             None, None
         )
+        self.gpc_script = WebKit2.UserScript(
+            GPC_JS,
+            WebKit2.UserContentInjectedFrames.ALL_FRAMES,
+            WebKit2.UserScriptInjectionTime.START,
+            None, None
+        )
         self.prefetch_script = WebKit2.UserScript(
             PREFETCH_USER_SCRIPT,
             WebKit2.UserContentInjectedFrames.ALL_FRAMES,
@@ -4779,7 +4802,7 @@ class ArrowBrowserWindow(Gtk.Window):
             print("Cache trim note:", e)
         self._relieve_memory_pressure()
 
-    BASE_FILTER_ID = "arrow-adblock-v4"  # bump whenever the built-in rules change: compiled filters are cached by id
+    BASE_FILTER_ID = "arrow-adblock-v5"  # bump whenever the built-in rules change: compiled filters are cached by id
 
     def _compile_content_blocker_filter(self):
         """Install the native content blocker. Compiled filters persist in WebKit's
@@ -5459,6 +5482,7 @@ class ArrowBrowserWindow(Gtk.Window):
             ucm._arrow_scripts_ready = True
             ucm.add_script(self.media_script)
             ucm.add_script(self.farbling_script)
+            ucm.add_script(self.gpc_script)
             # Private windows don't warm up connections to links you only hover: that would tell those
             # sites (and the DNS server) what you looked at without opening it.
             if not self.is_private:

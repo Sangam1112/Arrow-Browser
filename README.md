@@ -44,7 +44,8 @@
 ## ✨ Highlights
 
 - **Ad and tracker blocking** with weekly EasyList/EasyPrivacy updates, plus a **pop-up blocker** and hidden cookie banners. Sign-in pages and captchas keep working.
-- **Clean links:** strips `utm_*`, `fbclid` and other tracking tags, and skips tracking redirects.
+- **Clean links:** strips `utm_*`, `fbclid` and other tracking tags, and skips tracking redirects; link-click pings (`<a ping>`) are blocked.
+- **Global Privacy Control:** tells every site not to sell or share your data (`navigator.globalPrivacyControl`).
 - **HTTPS only**, and no way past a bad certificate: the padlock is green only for a verified one.
 - **Per-site controls** under the 🔒 padlock: what was blocked on the page, ads, JavaScript, pop-ups, zoom and permissions, and clearing one site's cookies.
 - **Fingerprint protection:** third-party cookies blocked, WebRTC off, graphics details hidden, canvas and audio fingerprints disguised per site.
