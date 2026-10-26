@@ -72,6 +72,9 @@ PAGES = {
     "/framed": "<html><title>framed</title><body><iframe src='/thin?utm_source=frame'></iframe></body></html>",
     "/darksite": ("<html><head><title>darksite</title><style>.dk{background:#121212;color:#eee}</style></head>"
                   "<body class='dk'>already dark</body></html>"),
+    # what broke mouse-wheel scrolling on mindrift.ai: no bounce at the page's ends plus a wheel listener
+    "/nobounce": ("<html><head><title>nobounce</title><style>html{overscroll-behavior:none}</style></head><body>"
+                  + "<p>line</p>" * 300 + "<script>addEventListener('wheel',()=>{},{passive:false})</script></body></html>"),
     "/opener": "<html><title>opener</title><body><a id='p' target='_blank' href='/done?utm_source=mail&k=1'>open</a></body></html>",
     # like google.com/url: a page whose script sends you on to a site that can't be reached
     "/jsredirect-dead": ("<html><title>jsredirect</title><body><script>"
@@ -884,6 +887,23 @@ class WindowFeatureTests(unittest.TestCase):
         self.assertAlmostEqual(wv.get_zoom_level(), 0.9, places=2)
         scroll(-1.0)  # a mouse wheel notch the other way
         self.assertAlmostEqual(wv.get_zoom_level(), 1.0, places=2)
+
+    def test_mouse_wheel_scrolls_a_page_that_turns_off_overscroll(self):
+        before = self.win._tab_boxes()
+        self.addCleanup(self.close_new_tabs, before)
+        wv = self.open_tab("/nobounce", "nobounce")._arrow_webview
+        self.assertTrue(spin(lambda: wv.get_mapped() and wv.get_allocated_height() > 100, 5))
+        pointer = Gdk.Display.get_default().get_default_seat().get_pointer()
+        for _ in range(5):
+            event = Gdk.Event.new(Gdk.EventType.SCROLL)
+            event.scroll.window = wv.get_window()
+            event.scroll.send_event = 1
+            event.scroll.x, event.scroll.y = wv.get_allocated_width() / 2, wv.get_allocated_height() / 2
+            event.scroll.direction = Gdk.ScrollDirection.DOWN  # mouse wheel notches
+            event.set_device(pointer)
+            wv.event(event)
+            spin(lambda: False, 0.2)
+        self.assertTrue(spin(lambda: float(js(wv, "window.scrollY") or 0) > 0, 3), "the wheel didn't scroll the page")
 
     def test_address_bar_dns_lookup_only_for_what_the_user_types(self):
         self.win.url_entry.set_text("example-not-typed.com")

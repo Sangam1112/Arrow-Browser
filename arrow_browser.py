@@ -3324,6 +3324,13 @@ GPC_JS = r"""
 })();
 """
 
+# WebKitGTK 2.52 doesn't scroll a page with the mouse wheel or touchpad at all when it sets
+# overscroll-behavior: none (or contain) on <html> and also listens for wheel events, which many sites do
+# (seen on mindrift.ai). On <html> the setting only stops the bounce at the page's ends, so a user-level rule
+# turns it back off for up/down. Left and right stay as the page set them: sites use that to keep a sideways
+# swipe from going back a page.
+SCROLL_FIX_CSS = "html { overscroll-behavior-y: auto !important; }\n"
+
 FARBLING_EXEMPT_JS = r"""(function(host, path) {
     host = host.toLowerCase();
     return __ARROW_FARBLE_EXEMPT__.some(([domain, prefix]) =>
@@ -4593,6 +4600,8 @@ class ArrowBrowserWindow(Gtk.Window):
             WebKit2.UserStyleSheet(css, WebKit2.UserContentInjectedFrames.TOP_FRAME,
                                    WebKit2.UserStyleLevel.USER, None, None)
             for css in (BEDTIME_CSS, BEDTIME_DARK_CSS))
+        self.scroll_fix_stylesheet = WebKit2.UserStyleSheet(
+            SCROLL_FIX_CSS, WebKit2.UserContentInjectedFrames.ALL_FRAMES, WebKit2.UserStyleLevel.USER, None, None)
         self.dark_detect_script = WebKit2.UserScript.new_for_world(
             DARK_DETECT_JS, WebKit2.UserContentInjectedFrames.TOP_FRAME,
             WebKit2.UserScriptInjectionTime.START, DARK_WORLD, None, None)
@@ -5563,6 +5572,7 @@ class ArrowBrowserWindow(Gtk.Window):
             ucm.add_script(self.media_script)
             ucm.add_script(self.farbling_script)
             ucm.add_script(self.gpc_script)
+            ucm.add_style_sheet(self.scroll_fix_stylesheet)
             # Private windows don't warm up connections to links you only hover: that would tell those
             # sites (and the DNS server) what you looked at without opening it.
             if not self.is_private:
