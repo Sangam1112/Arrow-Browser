@@ -99,19 +99,20 @@
     <td align="center" valign="top"><b>General (continued)</b><br><img src="docs/screenshots/settings-general-2.png" alt="General settings: search engine, download folder, dark mode" width="400"></td>
   </tr>
   <tr>
-    <td align="center" valign="top"><b>Privacy &amp; Security</b><br><img src="docs/screenshots/settings-privacy.png" alt="Privacy and security settings: tracking protection and connections" width="400"></td>
-    <td align="center" valign="top"><b>Privacy &amp; Security (continued)</b><br><img src="docs/screenshots/settings-privacy-2.png" alt="Privacy and security settings: passwords and sites" width="400"></td>
+    <td align="center" valign="top"><b>Privacy &amp; Security</b><br><img src="docs/screenshots/settings-privacy.png" alt="Privacy and security settings: your data and blocking" width="400"></td>
+    <td align="center" valign="top"><b>Privacy &amp; Security (continued)</b><br><img src="docs/screenshots/settings-privacy-2.png" alt="Privacy and security settings: scam warnings, block lists and connections" width="400"></td>
   </tr>
   <tr>
+    <td align="center" valign="top"><b>Privacy &amp; Security (continued)</b><br><img src="docs/screenshots/settings-privacy-3.png" alt="Privacy and security settings: connections, passwords and sites" width="400"></td>
     <td align="center" valign="top"><b>History &amp; Data</b><br><img src="docs/screenshots/settings-history-data.png" alt="History and data settings" width="400"></td>
+  </tr>
+  <tr>
     <td align="center" valign="top"><b>Performance</b><br><img src="docs/screenshots/settings-performance.png" alt="Performance settings" width="400"></td>
+    <td align="center" valign="top"><b>About</b><br><img src="docs/screenshots/settings-about.png" alt="About page with version and update check" width="400"></td>
   </tr>
   <tr>
     <td align="center" valign="top"><b>Digital Wellbeing</b><br><img src="docs/screenshots/settings-wellbeing.png" alt="Digital Wellbeing settings: screen time and daily limits" width="400"></td>
     <td align="center" valign="top"><b>Digital Wellbeing (continued)</b><br><img src="docs/screenshots/settings-wellbeing-2.png" alt="Digital Wellbeing settings: breaks and bedtime" width="400"></td>
-  </tr>
-  <tr>
-    <td align="center" valign="top"><b>About</b><br><img src="docs/screenshots/settings-about.png" alt="About page with version and update check" width="400"></td>
   </tr>
 </table>
 </details>
