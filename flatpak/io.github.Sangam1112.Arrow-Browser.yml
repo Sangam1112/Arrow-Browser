@@ -1,0 +1,50 @@
+# Flatpak build of Arrow Browser. Local test build (from this checkout, uncommitted changes included):
+#   flatpak run org.flatpak.Builder --user --install --force-clean build-dir flatpak/io.github.Sangam1112.Arrow-Browser.yml
+# The copy submitted to Flathub is the same file with the `dir` source swapped for the release's git tag.
+id: io.github.Sangam1112.Arrow-Browser
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+command: arrow-browser
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+  # Downloads, and the folder screenshots go to. Other folders are reached through the file chooser portal.
+  - --filesystem=xdg-download
+  # Saved passwords live in the system keyring (GNOME Keyring, KWallet, KeePassXC), never in Arrow's files.
+  - --talk-name=org.freedesktop.secrets
+  # Notifications from sites the user allowed, and for finished downloads.
+  - --talk-name=org.freedesktop.Notifications
+modules:
+  - name: arrow-browser
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 arrow_browser.py -t /app/share/arrow-browser
+      - install -Dm644 assets/arrow_icon.png -t /app/share/arrow-browser/assets
+      - cp -r assets/fonts assets/icons /app/share/arrow-browser/assets/
+      # /app is read-only once installed, so compile now. Flatpak resets file times, hence the hash check.
+      - python3 -m compileall -q --invalidation-mode unchecked-hash /app/share/arrow-browser
+      - install -Dm755 flatpak/arrow-browser.sh /app/bin/arrow-browser
+      - install -Dm644 assets/arrow_icon.png /app/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png
+      - install -Dm644 arrow-browser.desktop /app/share/applications/${FLATPAK_ID}.desktop
+      - desktop-file-edit --set-icon=${FLATPAK_ID} --set-key=StartupWMClass --set-value=${FLATPAK_ID}
+          --set-comment="Fast, private web browser that blocks ads and trackers"
+          /app/share/applications/${FLATPAK_ID}.desktop
+      - install -Dm644 flatpak/${FLATPAK_ID}.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 LICENSE -t /app/share/licenses/${FLATPAK_ID}
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - build-dir
+          - .flatpak-builder
+          - crash-reports
+          - logs
+          - windows
+          - tests
+          - docs
+          - __pycache__

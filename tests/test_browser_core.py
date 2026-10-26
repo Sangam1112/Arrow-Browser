@@ -355,6 +355,49 @@ class ReleaseSeriesTests(TmpDirCase):
         self.assertFalse(bb.system_copy_is_newer(os.path.join(self.tmp, "arrow_browser.py"), user, system))
 
 
+class FlatpakTests(unittest.TestCase):
+    def flatpak(self, inside):
+        real = (bb.IN_FLATPAK, bb._SANDBOX_USABLE)
+        self.addCleanup(lambda: (setattr(bb, "IN_FLATPAK", real[0]), setattr(bb, "_SANDBOX_USABLE", real[1])))
+        bb.IN_FLATPAK, bb._SANDBOX_USABLE = inside, None
+
+    def test_data_folders_follow_flatpak_and_stay_put_elsewhere(self):
+        env = {"XDG_CONFIG_HOME": "/home/u/.var/app/io.github.Sangam1112.Arrow-Browser/config"}
+        real_env = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(real_env)))
+        os.environ.update(env)
+        self.flatpak(True)
+        self.assertEqual(bb.user_dir("XDG_CONFIG_HOME", "~/.config"), env["XDG_CONFIG_HOME"] + "/arrow-browser")
+        self.flatpak(False)
+        # a custom XDG_CONFIG_HOME must not make an existing profile seem to vanish
+        self.assertEqual(bb.user_dir("XDG_CONFIG_HOME", "~/.config"), os.path.expanduser("~/.config/arrow-browser"))
+
+    def test_flatpak_pages_get_the_flatpak_sandbox(self):
+        real = os.environ.get("ARROW_NO_SANDBOX")
+        self.addCleanup(lambda: os.environ.pop("ARROW_NO_SANDBOX", None) if real is None
+                        else os.environ.__setitem__("ARROW_NO_SANDBOX", real))
+        os.environ.pop("ARROW_NO_SANDBOX", None)
+        self.flatpak(True)
+        self.assertTrue(bb.webkit_sandbox_usable())
+        os.environ["ARROW_NO_SANDBOX"] = "1"
+        self.flatpak(True)
+        self.assertFalse(bb.webkit_sandbox_usable())
+
+    def test_flatpak_never_updates_itself(self):
+        self.flatpak(True)
+        self.assertFalse(bb.ArrowBrowserWindow.start_auto_git_update_check(None))
+        self.assertFalse(bb.ArrowBrowserWindow.download_and_install_update(None, "99.0.0"))
+
+    def test_flatpak_files_match_the_release(self):
+        app_id = "io.github.Sangam1112.Arrow-Browser"
+        with open(os.path.join(ROOT, "flatpak", app_id + ".metainfo.xml"), encoding="utf-8") as f:
+            metainfo = f.read()
+        self.assertIn(f"<id>{app_id}</id>", metainfo)
+        self.assertIn(f'<release version="{bb.APP_VERSION}"', metainfo, "the store page lists this release")
+        with open(os.path.join(ROOT, "flatpak", app_id + ".yml"), encoding="utf-8") as f:
+            self.assertIn(f"id: {app_id}\n", f.read())
+
+
 class OfflineAndPagesTests(unittest.TestCase):
     def test_bundled_font_is_registered_and_given_to_arrows_pages(self):
         bb.gi.require_version("PangoCairo", "1.0")
@@ -397,6 +440,7 @@ class OfflineAndPagesTests(unittest.TestCase):
         self.addCleanup(setattr, bb.GObject, "type_name", real)
         for name, connectivity, expected in (("GNetworkMonitorNM", bb.Gio.NetworkConnectivity.FULL, True),
                                              ("GNetworkMonitorNM", bb.Gio.NetworkConnectivity.LIMITED, False),
+                                             ("GNetworkMonitorPortal", bb.Gio.NetworkConnectivity.FULL, True),
                                              ("GNetworkMonitorBase", bb.Gio.NetworkConnectivity.FULL, False)):
             bb.GObject.type_name = lambda monitor, name=name: name
             self.assertEqual(bb._internet_confirmed(Monitor(connectivity)), expected, (name, connectivity))

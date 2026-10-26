@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright (C) 2026 Sangam1112 -->
+<component type="desktop-application">
+  <id>io.github.Sangam1112.Arrow-Browser</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Arrow Browser</name>
+  <summary>Fast, private web browser that blocks ads and trackers</summary>
+  <developer id="io.github.sangam1112">
+    <name>Sangam1112</name>
+  </developer>
+
+  <description>
+    <p>
+      Arrow is a small, fast web browser for Linux that keeps your browsing to yourself. It blocks ads and
+      trackers out of the box, runs well on older computers, and collects no personal data.
+    </p>
+    <ul>
+      <li>Ad, tracker and pop-up blocking, with cookie banners and empty ad boxes hidden</li>
+      <li>Clean links: tracking tags such as utm_ and fbclid are removed before pages load</li>
+      <li>HTTPS whenever a site supports it, and Global Privacy Control sent to every site</li>
+      <li>Warnings for fake bank and payment sites, and for pages that copy a command for you to paste</li>
+      <li>Per-site controls under the padlock: ads, JavaScript, pop-ups, zoom, permissions and cookies</li>
+      <li>Fingerprint protection: third-party cookies blocked, canvas and audio fingerprints disguised</li>
+      <li>Passwords kept in your system keyring, filled only when you click</li>
+      <li>Sleeping tabs, Tab Memory and a Low Memory Mode for older PCs</li>
+      <li>Digital Wellbeing: screen time, daily site limits, break reminders and bedtime mode</li>
+      <li>Light and dark themes, search shortcuts, pausable downloads and private windows</li>
+    </ul>
+    <p>
+      Arrow is built on WebKit. Sites that need DRM (Netflix, Spotify and similar) don't play, and there are no
+      extensions or sync.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.Sangam1112.Arrow-Browser.desktop</launchable>
+  <provides>
+    <binary>arrow-browser</binary>
+  </provides>
+
+  <url type="homepage">https://github.com/Sangam1112/Arrow-Browser</url>
+  <url type="bugtracker">https://github.com/Sangam1112/Arrow-Browser/issues</url>
+  <url type="vcs-browser">https://github.com/Sangam1112/Arrow-Browser</url>
+  <url type="contribute">https://github.com/Sangam1112/Arrow-Browser#-feedback--contributing</url>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#f6a77f</color>
+    <color type="primary" scheme_preference="dark">#9c3a1c</color>
+  </branding>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Browsing with ads and trackers blocked</caption>
+      <image>https://raw.githubusercontent.com/Sangam1112/Arrow-Browser/main/docs/screenshots/browser.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The light theme</caption>
+      <image>https://raw.githubusercontent.com/Sangam1112/Arrow-Browser/main/docs/screenshots/browser-light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Per-site controls under the padlock</caption>
+      <image>https://raw.githubusercontent.com/Sangam1112/Arrow-Browser/main/docs/screenshots/site-controls.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Privacy and security settings</caption>
+      <image>https://raw.githubusercontent.com/Sangam1112/Arrow-Browser/main/docs/screenshots/settings-privacy.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Digital Wellbeing</caption>
+      <image>https://raw.githubusercontent.com/Sangam1112/Arrow-Browser/main/docs/screenshots/settings-wellbeing.png</image>
+    </screenshot>
+  </screenshots>
+
+  <categories>
+    <category>Network</category>
+    <category>WebBrowser</category>
+  </categories>
+  <keywords>
+    <keyword>browser</keyword>
+    <keyword>web</keyword>
+    <keyword>internet</keyword>
+    <keyword>privacy</keyword>
+    <keyword>adblock</keyword>
+  </keywords>
+
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="1.0.4" date="2026-10-26">
+      <description>
+        <ul>
+          <li>Global Privacy Control tells every site not to sell or share your data</li>
+          <li>Link-click pings to trackers are blocked</li>
+          <li>Cleaner, matching toolbar icons and a real shield button</li>
+        </ul>
+      </description>
+    </release>
+    <release version="1.0.3" date="2026-10-25">
+      <description>
+        <ul>
+          <li>Links clicked inside a page get HTTPS and lose their tracking tags too</li>
+          <li>The fake bank site warning also checks clicked links and redirects</li>
+          <li>Many smaller fixes to downloads, pop-ups and block lists</li>
+        </ul>
+      </description>
+    </release>
+    <release version="1.0.2" date="2026-10-16">
+      <description>
+        <ul>
+          <li>Warnings for fake bank and payment sites, and for pages that copy a command</li>
+          <li>Optional SponsorBlock for YouTube</li>
+          <li>Privacy settings regrouped</li>
+        </ul>
+      </description>
+    </release>
+    <release version="1.0.1" date="2026-10-15"/>
+    <release version="1.0.0" date="2026-10-15"/>
+  </releases>
+</component>

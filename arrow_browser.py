@@ -25,6 +25,16 @@ RELEASE_SERIES = 2
 # that the launcher (/usr/bin/arrow-browser) prefers over the system one.
 USER_INSTALL_DIR = os.path.expanduser("~/.local/share/arrow-browser")
 SYSTEM_SCRIPT = "/usr/share/arrow-browser/arrow_browser.py"
+# The Flatpak (Flathub) build: Flathub delivers its updates, and the app can only keep files under
+# ~/.var/app/<app id>, which Flatpak passes in as XDG_CONFIG_HOME and XDG_CACHE_HOME.
+IN_FLATPAK = os.path.exists("/.flatpak-info")
+
+
+def user_dir(xdg_variable, fallback):
+    """Arrow's folder in ~/.config or ~/.cache. Outside a Flatpak these stay the fixed paths they always were,
+    so a custom XDG_CONFIG_HOME can't make existing settings and history seem to vanish."""
+    base = os.environ.get(xdg_variable) if IN_FLATPAK else None
+    return os.path.join(base or os.path.expanduser(fallback), "arrow-browser")
 
 
 def _version_tuple(v):
@@ -143,7 +153,7 @@ _prefer_newest_copy()
 # instances with this set to "1"), so it isn't advertised as a working
 # effect in the Settings UI — left in place only in case it still works on
 # other WebKit versions.
-CONFIG_DIR = os.path.expanduser("~/.config/arrow-browser")
+CONFIG_DIR = user_dir("XDG_CONFIG_HOME", "~/.config")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "settings.json")
 
 
@@ -267,6 +277,12 @@ try:
     gi.require_version('WebKit2', '4.1')
 except ValueError:
     gi.require_version('WebKit2', '4.0')
+
+if IN_FLATPAK:
+    from gi.repository import GLib
+    # Windows then carry the app id, so the desktop shows them with Arrow's name and icon. Must happen before
+    # GTK starts, which importing Gtk does.
+    GLib.set_prgname(os.environ.get("FLATPAK_ID") or "arrow-browser")
 
 from gi.repository import Gtk, Gdk, GdkPixbuf, GObject, WebKit2, GLib, Gio, Pango
 
@@ -541,12 +557,17 @@ def webkit_sandbox_usable():
     """True when WebKit can put every web page in a bubblewrap sandbox here. A page that breaks into its web
     process then has no access to your files. Probed once per run: bubblewrap must exist and be allowed to
     start (some systems forbid the user namespaces it needs). Turned on without that check, no page would load
-    at all. ARROW_NO_SANDBOX=1 turns it off."""
+    at all. Inside a Flatpak bubblewrap can't start, and WebKit puts each page in a Flatpak sub-sandbox
+    instead. ARROW_NO_SANDBOX=1 turns it off."""
     global _SANDBOX_USABLE
     if _SANDBOX_USABLE is None:
         _SANDBOX_USABLE = False
         bwrap = shutil.which("bwrap")
-        if os.environ.get("ARROW_NO_SANDBOX") != "1" and bwrap and shutil.which("xdg-dbus-proxy"):
+        if os.environ.get("ARROW_NO_SANDBOX") == "1":
+            pass
+        elif IN_FLATPAK:
+            _SANDBOX_USABLE = True
+        elif bwrap and shutil.which("xdg-dbus-proxy"):
             try:
                 _SANDBOX_USABLE = subprocess.run(
                     [bwrap, "--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "true"],
@@ -1092,7 +1113,7 @@ class ResumeJob:
             self._finish("failed", str(getattr(e, "reason", None) or e))
 
 
-CACHE_DIR = os.path.expanduser("~/.cache/arrow-browser")
+CACHE_DIR = user_dir("XDG_CACHE_HOME", "~/.cache")
 SESSION_FILE = os.path.join(CONFIG_DIR, "session.json")
 HISTORY_FILE = os.path.join(CONFIG_DIR, "history.json")
 HISTORY_MAX_ENTRIES = 500
@@ -1242,8 +1263,9 @@ _OFFLINE_ERROR_HINTS = (
 
 def _internet_confirmed(monitor):
     """True only when NetworkManager has checked that the internet really works. GLib's fallback monitor (no
-    NetworkManager, e.g. under WSL) always claims full connectivity, so it isn't trusted."""
-    return (GObject.type_name(monitor) == "GNetworkMonitorNM"
+    NetworkManager, e.g. under WSL) always claims full connectivity, so it isn't trusted. In a Flatpak the
+    desktop portal passes on what the system's monitor found."""
+    return (GObject.type_name(monitor) in ("GNetworkMonitorNM", "GNetworkMonitorPortal")
             and monitor.get_connectivity() == Gio.NetworkConnectivity.FULL)
 
 
@@ -5734,9 +5756,7 @@ class ArrowBrowserWindow(Gtk.Window):
             self.statusbar.push(self.context_id, "Only web pages can be saved.")
             return
         name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", webview.get_title() or site_host_of(uri)).strip().lstrip(".").strip()[:100] or "page"
-        dialog = Gtk.FileChooserDialog(title="Save Page As", transient_for=self, action=Gtk.FileChooserAction.SAVE)
-        dialog.get_style_context().add_class("arrow-dialog")
-        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.ACCEPT)
+        dialog = Gtk.FileChooserNative.new("Save Page As", self, Gtk.FileChooserAction.SAVE, "Save", "Cancel")
         dialog.set_do_overwrite_confirmation(True)
         dialog.set_current_folder(self.get_downloads_dir())
         dialog.set_current_name(name + ".mhtml")
@@ -7571,6 +7591,8 @@ class ArrowBrowserWindow(Gtk.Window):
             dialog._arrow_rebuild()
 
     def start_auto_git_update_check(self):
+        if IN_FLATPAK:
+            return False  # Flathub updates it; a self-installed copy would never be started anyway
         threading.Thread(target=self.async_git_update_check, daemon=True).start()
         return False
 
@@ -7673,6 +7695,8 @@ class ArrowBrowserWindow(Gtk.Window):
         when package.json publishes a "sha256" field for the release, verifies the
         downloaded bytes against it, and always requires a valid Ed25519
         "signature" (see verify_update_signature) before installing anything."""
+        if IN_FLATPAK:
+            return False
         target_path = os.path.abspath(__file__)
         if not os.access(target_path, os.W_OK):
             # System-wide package install (root-owned): update a per-user copy instead, which the launcher prefers.
@@ -8637,13 +8661,14 @@ class ArrowBrowserWindow(Gtk.Window):
             ctx.set_source_surface(surface, 0, 0)
             ctx.paint()
             pixbuf = Gdk.pixbuf_get_from_surface(opaque_surface, 0, 0, width, height)
-            desktop_dir = os.path.expanduser("~/Desktop")
+            # A Flatpak can't reach the Desktop folder, only Downloads.
+            desktop_dir = self.get_downloads_dir() if IN_FLATPAK else os.path.expanduser("~/Desktop")
             os.makedirs(desktop_dir, exist_ok=True)
             timestamp = GLib.DateTime.new_now_local().format("%Y%m%d_%H%M%S")
             filepath = self.unique_download_path(desktop_dir, f"ArrowScreenshot_{timestamp}.jpeg")
             filename = os.path.basename(filepath)
             pixbuf.savev(filepath, "jpeg", ["quality"], ["90"])
-            self.statusbar.push(self.context_id, f"📸 Screenshot saved to Desktop: {filename}")
+            self.statusbar.push(self.context_id, f"📸 Screenshot saved to {os.path.basename(desktop_dir)}: {filename}")
 
             dialog = Gtk.MessageDialog(
                 transient_for=self,
@@ -8651,10 +8676,10 @@ class ArrowBrowserWindow(Gtk.Window):
                 destroy_with_parent=True,
                 message_type=Gtk.MessageType.INFO,
                 buttons=Gtk.ButtonsType.OK,
-                text="Screenshot Saved to Desktop"
+                text=f"Screenshot Saved to {os.path.basename(desktop_dir)}"
             )
             dialog.get_style_context().add_class("arrow-dialog")
-            dialog.format_secondary_text(f"File: {filename}\nSaved in ~/Desktop")
+            dialog.format_secondary_text(f"File: {filename}\nSaved in {desktop_dir}")
             dialog.run()
             dialog.destroy()
         except Exception as e:
@@ -8737,13 +8762,8 @@ class ArrowBrowserWindow(Gtk.Window):
 
     def choose_download_folder(self, parent):
         """Ask for a new download folder. Returns True if it changed."""
-        chooser = Gtk.FileChooserDialog(
-            title="Choose download folder",
-            transient_for=parent,
-            action=Gtk.FileChooserAction.SELECT_FOLDER,
-        )
-        chooser.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        chooser.add_button("Select", Gtk.ResponseType.ACCEPT)
+        chooser = Gtk.FileChooserNative.new("Choose download folder", parent, Gtk.FileChooserAction.SELECT_FOLDER,
+                                            "Select", "Cancel")
         chooser.set_create_folders(True)
         chooser.set_current_folder(self.get_downloads_dir())
         changed = False
@@ -9245,7 +9265,7 @@ class ArrowBrowserWindow(Gtk.Window):
         chips = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         for chip_text, chip_class in (
             (f"v{self.current_version}", None),
-            ("🔐 Signed updates", "settings-chip-green"),
+            ("📦 Updates through Flathub" if IN_FLATPAK else "🔐 Signed updates", "settings-chip-green"),
         ):
             chip = Gtk.Label(label=chip_text)
             chip.get_style_context().add_class("settings-chip")
@@ -9285,7 +9305,8 @@ class ArrowBrowserWindow(Gtk.Window):
             "clicked",
             lambda b: self.check_for_updates_interactive(update_row._arrow_subtitle, btn_check_update, btn_restart_applied)
         )
-        self._settings_section(about, "UPDATES", update_block)
+        if not IN_FLATPAK:
+            self._settings_section(about, "UPDATES", update_block)
 
         def on_search(entry):
             term = entry.get_text().strip().lower()
@@ -10761,12 +10782,11 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         return restored, added_b, len(backup["site_settings"])
 
     def _choose_file(self, parent, title, save_name=None, pattern=None):
-        """A file chooser; save_name makes it a Save dialog suggesting that name. Returns a path or None."""
-        chooser = Gtk.FileChooserDialog(
-            title=title, transient_for=parent or self,
-            action=Gtk.FileChooserAction.SAVE if save_name else Gtk.FileChooserAction.OPEN)
-        chooser.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save" if save_name else "Open", Gtk.ResponseType.OK)
-        chooser.get_style_context().add_class("arrow-dialog")
+        """A file chooser; save_name makes it a Save dialog suggesting that name. Returns a path or None.
+        The native chooser, because in the Flatpak only the desktop's own chooser can reach every folder."""
+        chooser = Gtk.FileChooserNative.new(
+            title, parent or self, Gtk.FileChooserAction.SAVE if save_name else Gtk.FileChooserAction.OPEN,
+            "Save" if save_name else "Open", "Cancel")
         if save_name:
             chooser.set_do_overwrite_confirmation(True)
             chooser.set_current_folder(self.get_downloads_dir())
@@ -10776,7 +10796,7 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             file_filter.set_name(pattern)
             file_filter.add_pattern(pattern)
             chooser.add_filter(file_filter)
-        path = chooser.get_filename() if chooser.run() == Gtk.ResponseType.OK else None
+        path = chooser.get_filename() if chooser.run() == Gtk.ResponseType.ACCEPT else None
         chooser.destroy()
         return path
 
@@ -11117,6 +11137,8 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             self._settings_row("🚫", "Pop-ups blocked", "Allow them for one site from the padlock in the address bar."),
             self._settings_row("🔗", "Cleaner links", "Tracking tags such as utm_ and fbclid are removed before pages load."),
             self._settings_row("🔒", "Secure connections", "Sites open over HTTPS whenever they support it."),
+            self._settings_row("📦", "Updates through Flathub", "Your software store keeps Arrow up to date.")
+            if IN_FLATPAK else
             self._settings_row("🔐", "Signed updates", "Arrow updates itself, and only with releases signed by the project."),
         )
 

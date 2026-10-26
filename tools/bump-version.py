@@ -4,17 +4,20 @@
   tools/bump-version.py 1.4.1 "One-line summary of the changes"
 
 Updates package.json, arrow_browser.py (header + APP_VERSION), the README
-(badge and install examples), CHANGELOG.md and the RPM changelog. The build
+(badge and install examples), CHANGELOG.md, the RPM changelog and the Flathub
+store page (flatpak/*.metainfo.xml). The build
 scripts read the version from package.json, so nothing else needs editing.
 Run the build scripts afterwards: they refresh the checksum and sign the release.
 """
 import datetime
+import html
 import json
 import os
 import re
 import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+FLATPAK_ID = "io.github.Sangam1112.Arrow-Browser"
 
 
 def path(name):
@@ -63,7 +66,15 @@ def main():
     first = re.search(r"^## ", log, re.M)
     write("CHANGELOG.md", log[:first.start()] + section + log[first.start():] if first else log + "\n" + section)
 
-    print(f"Bumped {old} -> {new}. Edit CHANGELOG.md to expand the notes, then run build-deb.sh and build-rpm.sh.")
+    # The store page (Flathub, GNOME Software, Discover) shows each release's notes.
+    metainfo = f"flatpak/{FLATPAK_ID}.metainfo.xml"
+    release = (f'    <release version="{new}" date="{now.strftime("%Y-%m-%d")}">\n'
+               f"      <description>\n        <p>{html.escape(summary, quote=False)}</p>\n      </description>\n"
+               f"    </release>\n")
+    write(metainfo, read(metainfo).replace("  <releases>\n", "  <releases>\n" + release, 1))
+
+    print(f"Bumped {old} -> {new}. Expand the notes in CHANGELOG.md and {metainfo}, "
+          "then run build-deb.sh and build-rpm.sh.")
 
 
 if __name__ == "__main__":
