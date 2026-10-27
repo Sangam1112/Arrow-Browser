@@ -95,6 +95,14 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.0.6" date="2026-10-27">
+      <description>
+        <ul>
+          <li>Pages with videos use less memory and data: videos load the way the site asks</li>
+          <li>Hiding cookie banners is now off by default, as it uses memory on every page; turn it on in Settings, Privacy</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.0.5" date="2026-10-26">
       <description>
         <ul>

@@ -4,6 +4,12 @@ All notable changes to Arrow Browser. Versions follow `MAJOR.MINOR.PATCH`.
 Releases are signed; the in-app updater only installs a release whose signature verifies.
 Notes from before 1.0.0 (Bharat Browser, and Arrow up to 1.6.9 in the old repository) are in [docs/HISTORY.md](docs/HISTORY.md).
 
+## [1.0.6] - 2026-10-27
+
+### Changed
+- **Pages with videos use less memory and data.** Arrow told every video on every page to start downloading at once, even ones you never play, and watched every change on every page to do so. Videos now load the way the site asks. With 4 news and reference tabs open this saved about 30 MB. AV1 stays turned down as before, and the fix for videos that froze after leaving fullscreen stays too.
+- **Hiding cookie banners is now off by default.** Its list of about 1 MB is applied to every page and cost about 6 MB per tab. Turn it on in Settings → Privacy → Hide cookie banners. If you had it on, it stays on. While it's off, Arrow no longer downloads the cookie-banner list.
+
 ## [1.0.5] - 2026-10-26
 
 ### Added
