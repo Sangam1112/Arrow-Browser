@@ -43,7 +43,7 @@
 
 ## ✨ Highlights
 
-- **Ad and tracker blocking** with weekly EasyList/EasyPrivacy updates, plus a **pop-up blocker** and hidden cookie banners. Sign-in pages and captchas keep working.
+- **Ad and tracker blocking** with weekly EasyList/EasyPrivacy updates, plus a **pop-up blocker**, and cookie banners hidden if you want. Sign-in pages and captchas keep working.
 - **Clean links:** strips `utm_*`, `fbclid` and other tracking tags, and skips tracking redirects; link-click pings (`<a ping>`) are blocked.
 - **Global Privacy Control:** tells every site not to sell or share your data (`navigator.globalPrivacyControl`).
 - **HTTPS only**, and no way past a bad certificate: the padlock is green only for a verified one.
@@ -56,7 +56,7 @@
 <summary><b>All features</b></summary>
 
 **Privacy and security**
-- **No empty ad boxes or cookie banners:** the spaces ads leave and "Accept cookies" pop-ups are hidden (EasyList Cookie List). Nothing is accepted for you.
+- **No empty ad boxes:** the spaces ads leave are hidden. **Cookie banners** ("Accept cookies" pop-ups) can be hidden too (off by default, as it uses a little more memory on every page; EasyList Cookie List). Nothing is accepted for you.
 - **Pop-ups:** ad pop-ups never open, and other sites' pop-ups wait for your OK. Allow them for a site with one click, or under the 🔒 padlock.
 - **Privacy report** showing what was blocked.
 - **Scam warnings:** a page whose address copies a bank, payment or government site's (SBI, HDFC, Paytm, IRCTC, Aadhaar and more) is stopped before it opens, and Arrow warns when a page copies a command for you to paste into a Terminal, as fake "I'm not a robot" checks do. Both are checked on your computer.

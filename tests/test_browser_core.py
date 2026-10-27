@@ -931,7 +931,7 @@ class TrackerListFetchTests(TmpDirCase):
         with open(bb.COSMETIC_CACHES["ads"]) as f:
             self.assertEqual(json.load(f), {"generic": [".ad-box"], "exceptions": {},
                                             "specific": [[["news.example"], [".promo"]]]})
-        self.assertFalse(os.path.exists(bb.COSMETIC_CACHES["cookies"]), "no cookie list: nothing written")
+        self.assertFalse(os.path.exists(bb.COSMETIC_CACHES["cookies"]), "cookie banners not hidden: no cookie list")
         cookies = os.path.join(self.tmp, "cookies.txt")
         write_text(cookies, "\n".join(f"##.consent-{i}" for i in range(120)))
         bb.fetch_tracker_list((trackers, "file://" + ads), cookie_url="file://" + cookies)

@@ -383,6 +383,7 @@ class WindowFeatureTests(unittest.TestCase):
         bb.DESKTOP_NOTIFIER.send = lambda summary, body="", icon="", on_click=None: \
             cls.notifications.append((summary, body, on_click))
         cls.win = bb.ArrowBrowserWindow()
+        cls.started_hiding_cookie_banners = cls.win.hide_cookie_banners
         cls.win.show_all()
         cls.win.secrets = FakeSecrets()
         assert spin(lambda: cls.win.content_filter is not None, 20), "content filter never compiled"
@@ -1591,6 +1592,7 @@ class WindowFeatureTests(unittest.TestCase):
     # ---- element hiding ---------------------------------------------------
     def test_ad_boxes_and_cookie_banners_are_hidden_unless_switched_off(self):
         win = self.win
+        win.hide_cookie_banners = True  # off by default
         hiding = {"ads": {"generic": [".arrow-test-ad"], "exceptions": {},
                           "specific": [[["127.0.0.1"], [".arrow-site-only"]], [["other.example"], ["#ok"]]]},
                   "cookies": {"generic": [".arrow-test-cookie"], "exceptions": {}, "specific": []}}
@@ -1601,7 +1603,7 @@ class WindowFeatureTests(unittest.TestCase):
         def undo():
             for path in bb.COSMETIC_CACHES.values():
                 os.remove(path)
-            win.hide_cookie_banners = True
+            win.hide_cookie_banners = False
             win._compile_content_blocker_filter()
 
         self.addCleanup(undo)
@@ -1630,6 +1632,19 @@ class WindowFeatureTests(unittest.TestCase):
                         "the bigger downloaded list stayed on (a smaller filter was never installed)")
         win.on_tracker_lists_toggled(True)
         self.assertTrue(spin(lambda: win._content_filter_rank > 0, 30))
+
+    def test_cookie_banner_list_is_off_by_default_and_only_downloaded_while_on(self):
+        self.assertFalse(self.started_hiding_cookie_banners, "a profile without the setting")
+        win, asked, done = self.win, [], []
+        real = bb.fetch_tracker_list
+        bb.fetch_tracker_list = lambda **kwargs: asked.append(kwargs.get("cookie_url"))
+        self.addCleanup(setattr, bb, "fetch_tracker_list", real)
+        self.addCleanup(setattr, win, "hide_cookie_banners", False)
+        for on in (False, True):
+            win.hide_cookie_banners = on
+            win.refresh_tracker_list_async(on_done=done.append, url_rules=False)
+            self.assertTrue(spin(lambda: len(done) == len(asked) == int(on) + 1, 10))
+        self.assertEqual(asked, [None, bb.COOKIE_LIST_URL])
 
     def test_cookie_banner_switch_downloads_only_a_missing_cookie_list(self):
         win = self.win
@@ -1880,6 +1895,13 @@ class WindowFeatureTests(unittest.TestCase):
         self.assertEqual(js(wv, "JSON.stringify([MediaSource.isTypeSupported(%s), "
                                 "document.createElement('video').canPlayType(%s)])" % (av1, av1)),
                          '[false,""]', "AV1 stays turned down")
+
+    def test_videos_keep_the_pages_own_preload(self):
+        # Forcing preload='auto' made pages download videos nobody played (~6 MB more per tab).
+        wv = self.load("/blank")
+        js(wv, "window.v = document.createElement('video'); v.preload = 'none'; document.body.appendChild(v); 1")
+        spin(lambda: False, 0.3)
+        self.assertEqual(js(wv, "v.preload"), "none")
 
     def test_logout_still_clears_history_and_cookies(self):
         # Logging out or shutting down ends the browser with SIGTERM; it must close the normal way.

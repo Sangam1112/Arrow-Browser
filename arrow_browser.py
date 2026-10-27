@@ -2724,9 +2724,10 @@ def fetch_cookie_list(url=COOKIE_LIST_URL, timeout=20):
     _write_json_private(COSMETIC_CACHES["cookies"], cookies, indent=None)
 
 
-def fetch_tracker_list(urls=TRACKER_LIST_URLS, timeout=20, cookie_url=COOKIE_LIST_URL):
+def fetch_tracker_list(urls=TRACKER_LIST_URLS, timeout=20, cookie_url=None):
     """Download + parse the block lists and cache the merged result. Raises if any list fails, so a
-    half-finished update never replaces a complete older one."""
+    half-finished update never replaces a complete older one. The cookie-banner list comes too when
+    cookie_url is given (only while cookie banners are hidden)."""
     domains, popups, hiding = set(), set(), []
     for url in urls:
         text = (_download_capped(url, TRACKER_LIST_MAX_BYTES, timeout, "ArrowBrowser-tracker-list")
@@ -2741,10 +2742,11 @@ def fetch_tracker_list(urls=TRACKER_LIST_URLS, timeout=20, cookie_url=COOKIE_LIS
     os.makedirs(CACHE_DIR, exist_ok=True)
     _write_json_private(POPUP_LIST_CACHE, {"fetched": time.time(), "domains": sorted(popups)}, indent=None)
     _write_json_private(COSMETIC_CACHES["ads"], merge_cosmetic_rules(hiding), indent=None)
-    try:  # cookie banners are extra: if their list can't be fetched, the old copy (if any) stays
-        fetch_cookie_list(cookie_url, timeout)
-    except Exception as e:
-        print("Cookie banner list download note:", e)
+    if cookie_url:
+        try:  # cookie banners are extra: if their list can't be fetched, the old copy (if any) stays
+            fetch_cookie_list(cookie_url, timeout)
+        except Exception as e:
+            print("Cookie banner list download note:", e)
     _write_json_private(TRACKER_LIST_CACHE, {"fetched": time.time(), "sources": list(urls),
                                              "domains": sorted(domains)}, indent=None)
     return domains
@@ -3671,56 +3673,6 @@ MEDIA_POLYFILL_JS = """
         };
     }
 
-    const boosted = new WeakSet();  // not a property on the element, where pages could see it
-    function boostVideo(v) {
-        if (!boosted.has(v)) {
-            boosted.add(v);
-            v.preload = 'auto';
-        }
-    }
-
-    function optimizeVideoElements() {
-        try {
-            document.querySelectorAll('video').forEach(boostVideo);
-        } catch(e){}
-    }
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', optimizeVideoElements);
-    } else {
-        optimizeVideoElements();
-    }
-
-    // Event-driven instead of a 1500ms poll loop running forever in every
-    // open tab: react only when the DOM actually changes (new <video> added
-    // by the page's own JS/SPA routing), which is the only time there's
-    // new work to do anyway. Only inspect each mutation's addedNodes (and
-    // their subtrees), not a full document.querySelectorAll('video') scan
-    // on every single mutation batch: on a page that mutates independently
-    // and often (live feeds, ad refreshes, chat widgets — confirmed via
-    // testing that each separate update triggers its own callback, not one
-    // shared batch), a full-document rescan on every one of those is a real,
-    // measurable, and entirely avoidable CPU cost that scales with page size.
-    function handleMutations(mutationsList) {
-        try {
-            for (const mutation of mutationsList) {
-                for (const node of mutation.addedNodes) {
-                    if (node.nodeType !== 1) continue;
-                    if (node.tagName === 'VIDEO') {
-                        boostVideo(node);
-                    } else if (node.querySelectorAll) {
-                        node.querySelectorAll('video').forEach(boostVideo);
-                    }
-                }
-            }
-        } catch(e){}
-    }
-
-    try {
-        const observer = new MutationObserver(handleMutations);
-        observer.observe(document.documentElement || document, { childList: true, subtree: true });
-    } catch(e){}
-
     // WebKitGTK 2.52 freezes a playing <video> when it leaves fullscreen (Esc or the exit button): the
     // picture and currentTime stop while it still reports playing. A pause()/play() restarts it; a seek does not.
     document.addEventListener('fullscreenchange', function() {
@@ -4315,7 +4267,7 @@ class ArrowBrowserWindow(Gtk.Window):
         self.gpu_acceleration_enabled = saved_settings.get("gpu_acceleration_enabled", GPU_ACCELERATION_DEFAULT)
         self.spellcheck_enabled = saved_settings.get("spellcheck_enabled", True)
         self.tracker_lists_enabled = saved_settings.get("tracker_lists_enabled", True)
-        self.hide_cookie_banners = saved_settings.get("hide_cookie_banners", True)
+        self.hide_cookie_banners = saved_settings.get("hide_cookie_banners", False)  # its list costs memory on every page
         self.block_notification_requests = saved_settings.get("block_notification_requests", False)
         self.lookalike_warning_enabled = saved_settings.get("lookalike_warning_enabled", True)
         self.clipboard_guard_enabled = saved_settings.get("clipboard_guard_enabled", True)
@@ -9089,7 +9041,7 @@ class ArrowBrowserWindow(Gtk.Window):
                    store("adblock_enabled")),
             switch("hide_cookie_banners", "🍪", "Hide cookie banners",
                    "Hides \"Accept cookies\" pop-ups and bars. Nothing is accepted for you. "
-                   "Turn off if a site's page stops scrolling.",
+                   "Uses a little more memory on every page. Turn off if a site's page stops scrolling.",
                    self.on_hide_cookie_banners_toggled),
             switch("clearurls_enabled", "🔗", "Remove tracking tags from links",
                    "Strips utm_*, fbclid, gclid and hundreds of other tags from addresses before they load, "
@@ -11817,7 +11769,7 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             rules_fetched = cookies_fetched = False
             if lists:
                 try:
-                    domains = fetch_tracker_list()
+                    domains = fetch_tracker_list(cookie_url=COOKIE_LIST_URL if self.hide_cookie_banners else None)
                 except Exception as e:
                     errors.append(f"block lists: {e}")
             if cookie_list:
