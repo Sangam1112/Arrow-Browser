@@ -4,6 +4,16 @@ All notable changes to Arrow Browser. Versions follow `MAJOR.MINOR.PATCH`.
 Releases are signed; the in-app updater only installs a release whose signature verifies.
 Notes from before 1.0.0 (Bharat Browser, and Arrow up to 1.6.9 in the old repository) are in [docs/HISTORY.md](docs/HISTORY.md).
 
+## [1.0.7] - 2026-10-27
+
+### Security
+- **A download's name can no longer hide what kind of file it is.** A site could put an invisible text-direction mark in a file name, so that `invoice‮fdp.sh` (a program) showed as "invoicehs.pdf", both in Arrow's "this file can run programs" question and in your file manager. Arrow now removes these marks from download names.
+- **People's pages on shared hosts are now separate sites.** Arrow counted every page on hosts such as github.io or blogspot.com as one site. One person's page could open pop-ups to another's without asking, and "Clear cookies and site data" on one of them cleared them all. Arrow now uses the public list of such hosts.
+- **A saved password always belongs to the page that asked.** If a page sent a login form and at once moved the tab to another site, the "Save password?" bar could name that other site. It now always names the page that had the form, and no fill is offered for the site the tab moved on to.
+
+### Fixed
+- **Photos on some sites showed inverted in dark mode,** such as the banner on CarDekho's used-cars page. Dark mode only turned back pictures set one way (`background-image`), not the short form (`background:url(…)`). Both are turned back now, and text on such a picture stays dark.
+
 ## [1.0.6] - 2026-10-27
 
 ### Changed

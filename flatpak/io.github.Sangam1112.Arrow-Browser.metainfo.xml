@@ -95,6 +95,16 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.0.7" date="2026-10-27">
+      <description>
+        <ul>
+          <li>A download's name can no longer hide what kind of file it is</li>
+          <li>Pages on shared hosts such as github.io are treated as separate sites</li>
+          <li>A saved password always belongs to the page that asked for it</li>
+          <li>Photos on some sites no longer show inverted in dark mode</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.0.6" date="2026-10-27">
       <description>
         <ul>

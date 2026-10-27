@@ -78,6 +78,8 @@ python3 -m py_compile /usr/share/arrow-browser/arrow_browser.py >/dev/null 2>&1 
 if [ \$1 -eq 0 ]; then rm -rf /usr/share/arrow-browser/__pycache__; fi
 
 %changelog
+* Tue Oct 27 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.7-1
+- Security fixes and background photos no longer inverted in dark mode
 * Tue Oct 27 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.6-1
 - Pages with videos use less memory; hiding cookie banners is now off by default
 * Mon Oct 26 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.5-1
