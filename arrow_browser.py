@@ -285,6 +285,10 @@ if IN_FLATPAK:
     GLib.set_prgname(os.environ.get("FLATPAK_ID") or "arrow-browser")
 
 from gi.repository import Gtk, Gdk, GdkPixbuf, GObject, WebKit2, GLib, Gio, Pango
+try:
+    from gi.repository import Soup  # the version WebKit was built with, already loaded by it
+except ImportError:
+    Soup = None
 
 # -------------------------------------------------------------------------
 # Interface font. Lexend (SIL Open Font License, assets/fonts/OFL.txt) ships with Arrow and is added to this
@@ -852,9 +856,11 @@ def make_private_dir(path):
 def download_filename(suggested, uri=""):
     """A safe file name for a download: the server's suggested name (Content-Disposition), else the last part of
     the address. Never a path, and never a hidden file (a leading dot): a site could otherwise drop something
-    like .profile into the download folder without it showing up."""
+    like .profile into the download folder without it showing up. No invisible text-direction marks either:
+    "invoice\u202efdp.sh" shows as "invoicehs.pdf", in Arrow's warning and in the file manager."""
     for candidate in (suggested, urllib.parse.unquote(urllib.parse.urlparse(uri or "").path.rsplit("/", 1)[-1])):
-        name = re.sub(r"[\x00-\x1f\x7f]", "", (candidate or "").replace("/", "_")).strip().lstrip(".").strip()
+        name = re.sub(r"[\x00-\x1f\x7f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "",
+                      (candidate or "").replace("/", "_")).strip().lstrip(".").strip()
         if name:
             return name
     return "download"
@@ -2127,14 +2133,22 @@ _COUNTRY_SECOND_LEVELS = {"co", "com", "net", "org", "gov", "ac", "edu", "ne", "
 
 
 def site_of(host):
-    """The site a host belongs to, without a public-suffix list: its last two labels, or three under a
-    country's "co.in"-style suffix. mail.google.com -> google.com, www.bbc.co.uk -> bbc.co.uk."""
-    labels = (host or "").split(".")
+    """The site a host belongs to, from the public-suffix list libsoup ships: mail.google.com -> google.com,
+    www.bbc.co.uk -> bbc.co.uk, and alice.github.io is a site of its own, not one with bob.github.io.
+    Where that has no answer (localhost, a bare suffix, libsoup missing): the last two labels, or three under
+    a country's "co.in"-style suffix."""
+    host = (host or "").lower()
+    labels = host.split(".")
     try:
         ipaddress.ip_address(host)
         return host
     except ValueError:
         pass
+    if Soup is not None and host:
+        try:
+            return Soup.tld_get_base_domain(host)
+        except Exception:  # GLib.Error: no base domain, or the host is itself a public suffix
+            pass
     keep = 3 if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in _COUNTRY_SECOND_LEVELS else 2
     return ".".join(labels[-keep:])
 
@@ -4855,7 +4869,7 @@ class ArrowBrowserWindow(Gtk.Window):
             print("Cache trim note:", e)
         self._relieve_memory_pressure()
 
-    BASE_FILTER_ID = "arrow-adblock-v5"  # bump whenever the built-in rules change: compiled filters are cached by id
+    BASE_FILTER_ID = "arrow-adblock-v6"  # bump whenever the built-in rules change: compiled filters are cached by id
 
     def _compile_content_blocker_filter(self):
         """Install the native content blocker. Compiled filters persist in WebKit's
@@ -11416,14 +11430,17 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             return
         webview = self._password_message_source(ucm, message.get("url"))
         uri = (webview.get_uri() or "") if webview else ""
-        host = site_host_of(uri)
+        # The site is the page that sent the message (its address is read in the isolated world, so the page
+        # can't change it), not wherever the tab is by now: a page could submit and at once move on to a bank.
+        sender = message.get("url") if isinstance(message.get("url"), str) else uri
+        host = site_host_of(sender)
         if not host or self.site_settings.get(host, {}).get("passwords") is False:
             return
         if kind == "submit":
             user, password = message.get("user", ""), message.get("pass", "")
             if isinstance(user, str) and isinstance(password, str) and 0 < len(password) <= 1024 and len(user) <= 512:
                 self._offer_save_password(host, user, password)
-        elif kind == "form" and (uri.startswith("https://") or is_local_network_host(host)):
+        elif kind == "form" and site_host_of(uri) == host and (uri.startswith("https://") or is_local_network_host(host)):
             if webview is self.get_active_webview():
                 self._offer_fill_password(webview, host, uri)
             else:

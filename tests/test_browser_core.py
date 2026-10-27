@@ -79,6 +79,8 @@ class UrlHelperTests(unittest.TestCase):
         self.assertEqual(f("..", ""), "download")
         self.assertEqual(f(".profile"), "profile", "never a hidden file")
         self.assertEqual(f("bad\nname\x07.txt"), "badname.txt", "no control characters")
+        self.assertEqual(f("invoice\u202efdp.sh"), "invoicefdp.sh", "no hidden text direction (shows as invoicehs.pdf)")
+        self.assertTrue(bb.is_risky_download(f("photo\u2067gpj.\u2069desktop")))
 
     def test_old_chromium_profile_data_is_removed_and_webkit_data_kept(self):
         d = tempfile.mkdtemp()
@@ -848,8 +850,13 @@ class TrackerListTests(unittest.TestCase):
     def test_site_of(self):
         for host, site in (("mail.google.com", "google.com"), ("google.com", "google.com"), ("www.bbc.co.uk", "bbc.co.uk"),
                            ("shop.example.in", "example.in"), ("a.b.irctc.co.in", "irctc.co.in"),
-                           ("127.0.0.1", "127.0.0.1"), ("localhost", "localhost"), ("", "")):
+                           ("127.0.0.1", "127.0.0.1"), ("localhost", "localhost"), ("", ""),
+                           ("WWW.Google.COM", "google.com"), ("alice.github.io", "alice.github.io"),
+                           ("www.alice.github.io", "alice.github.io"), ("github.io", "github.io"),
+                           ("x.blogspot.com", "x.blogspot.com"), ("a.b.gov.in", "b.gov.in")):
             self.assertEqual(bb.site_of(host), site, host)
+        self.assertNotEqual(bb.site_of("alice.github.io"), bb.site_of("bob.github.io"),
+                            "people's pages on a shared host are separate sites (pop-ups, clearing site data)")
 
     def test_parse_keeps_only_safe_whole_domain_rules(self):
         self.assertEqual(bb.parse_abp_domain_rules(self.LIST),

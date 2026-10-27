@@ -2349,6 +2349,28 @@ class WindowFeatureTests(unittest.TestCase):
             for i in reversed(range(before, win.notebook.get_n_pages())):
                 win.close_tab(win.notebook.get_nth_page(i))
 
+    def test_password_message_counts_for_the_page_that_sent_it(self):
+        # A page can submit a login form and move the tab to another site at once; the message then arrives
+        # while the tab shows that other site, which must not get the login (or a fill offer).
+        win = self.win
+        self.addCleanup(win._clear_infobar)
+        self.addCleanup(win.secrets.items.clear)
+        wv = self.load("/blank")
+        other = f"http://localhost:{self.port}/blank"
+        wv.load_uri(other)
+        self.assertTrue(spin(lambda: not wv.is_loading() and wv.get_uri() == other, 10))
+        for message in ({"type": "form"}, {"type": "submit", "user": "eve", "pass": "pw1"}):
+            message["url"] = self.base + "/blank"  # sent by the 127.0.0.1 page, before the tab moved on
+            win.secrets.items[("localhost", "me")] = "mine"
+            wv.run_javascript_in_world("window.webkit.messageHandlers.arrowPw.postMessage(%s)" % json.dumps(message),
+                                       "arrow-pw", None, None, None)
+            spin(lambda: win._infobar is not None, 1.5)
+            if message["type"] == "form":
+                self.assertIsNone(win._infobar, "no fill offer for the site the tab moved on to")
+        self.assertIn("127.0.0.1", self.infobar_text(), "the save prompt names the page that sent the login")
+        win._infobar.response(1)  # "Save"
+        self.assertEqual(win.secrets.items, {("localhost", "me"): "mine", ("127.0.0.1", "eve"): "pw1"})
+
     def test_password_prompt_respects_never_and_private(self):
         self.win.site_settings["127.0.0.1"] = {"passwords": False}
         wv = self.load("/login")
