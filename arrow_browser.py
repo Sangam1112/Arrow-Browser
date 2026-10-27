@@ -3532,6 +3532,7 @@ DARK_WORLD = "arrow-dark"
 # Pages that are already dark (their own dark theme, or prefers-color-scheme
 # from a dark desktop theme) are marked by DARK_DETECT_JS and left alone:
 # inverting them would turn them white.
+DARK_BG_PICTURE = '[style*="background" i][style*="url(" i]'  # inline background-image or background shorthand
 DARKREADER_CSS = """
 html:not([%(attr)s]) {
     filter: invert(90%%) hue-rotate(180deg) !important;
@@ -3540,10 +3541,19 @@ html:not([%(attr)s]) {
        whereas #121212 would flip to light grey behind transparent pages. */
     background-color: #ffffff !important;
 }
-html:not([%(attr)s]) :is(img, video, canvas, svg, [style*="background-image"]) {
+html:not([%(attr)s]) :is(%(media)s) {
     filter: invert(111%%) hue-rotate(180deg) !important;
 }
-""" % {"attr": DARK_NATIVE_ATTR}
+/* A picture set as an element's background (often the "background:url(...)" shorthand, as on
+   cardekho.com) is turned back with its element, and so is everything inside it. So its children
+   are darkened again, except pictures, which are already right there. */
+html:not([%(attr)s]) %(bg)s > :is(%(media)s) {
+    filter: none !important;
+}
+html:not([%(attr)s]) %(bg)s > :not(%(media)s) {
+    filter: invert(90%%) hue-rotate(180deg) !important;
+}
+""" % {"attr": DARK_NATIVE_ATTR, "bg": DARK_BG_PICTURE, "media": "img, video, canvas, svg, " + DARK_BG_PICTURE}
 
 # Bedtime wind-down turns pages grey. The filter has to sit on <html> too (a filter on
 # <body> would make position:fixed headers scroll away), so with dark mode on, the

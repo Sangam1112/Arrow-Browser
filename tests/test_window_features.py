@@ -87,6 +87,11 @@ PAGES = {
     "/popups": ("<html><title>popups</title><body><a id='link' target='_blank' href='http://localhost:%PORT%/thin'>x</a>"
                 "<a id='ad' target='_blank' href='http://127.0.0.2:%PORT%/blank'>ad</a>"
                 "<button id='open' onclick='window.res = String(window.open(window.to))'>open</button></body></html>"),
+    "/darkbanner": ("<html><title>darkbanner</title><body>"
+                    "<div id='banner' style='background:url(data:image/gif;base64,R0lGODlhAQABAAAAACw=) no-repeat'>"
+                    "<h1 id='heading'>Buy cars</h1><img id='inside' alt='' width='4' height='4'"
+                    " style='background:url(data:image/gif;base64,R0lGODlhAQABAAAAACw=)'></div>"
+                    "<img id='alone' alt='' width='4' height='4'></body></html>"),
     "/hiding": ("<html><title>hiding</title><body><div id='ad' class='arrow-test-ad'>ad</div>"
                 "<div id='ck' class='arrow-test-cookie'>cookies</div><div id='site' class='arrow-site-only'>site</div>"
                 "<p id='ok'>text</p></body></html>"),
@@ -431,6 +436,21 @@ class WindowFeatureTests(unittest.TestCase):
         finally:
             win.set_dark_mode(False)
         self.assertEqual(wv.get_background_color().to_string(), "rgb(255,255,255)")
+
+    def test_dark_mode_turns_back_background_pictures_but_not_the_text_on_them(self):
+        # cardekho.com sets its banner photo with the "background:url(...)" shorthand; only
+        # "background-image" was turned back, so the photo showed inverted.
+        win = self.win
+        win.set_dark_mode(True)
+        self.addCleanup(win.set_dark_mode, False)
+        wv = self.load("/darkbanner", "darkbanner")
+        filters = "JSON.stringify(['banner', 'heading', 'inside', 'alone'].map(id => getComputedStyle(document.getElementById(id)).filter))"
+        self.assertTrue(spin(lambda: "invert" in (js(wv, filters) or ""), 3))
+        banner, heading, inside, alone = json.loads(js(wv, filters))
+        self.assertIn("invert(1)", banner, "background picture turned back")
+        self.assertIn("invert(0.9)", heading, "the text on it darkened again")
+        self.assertEqual(inside, "none", "a picture inside it is already right")
+        self.assertIn("invert(1)", alone)
 
     def test_dark_mode_notices_a_dark_theme_that_arrives_while_loading(self):
         # Heavy sites paint long before they finish loading and their dark styles come in between.
