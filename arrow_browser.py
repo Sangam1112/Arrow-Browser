@@ -3547,6 +3547,10 @@ DARK_WORLD = "arrow-dark"
 # from a dark desktop theme) are marked by DARK_DETECT_JS and left alone:
 # inverting them would turn them white.
 DARK_BG_PICTURE = '[style*="background" i][style*="url(" i]'  # inline background-image or background shorthand
+# Embedded video players live in iframes. The stylesheet is only added to the top frame, so the inverted page
+# inverted them and nothing turned them back. Other iframes (comments, tweets) stay darkened with the page.
+DARK_VIDEO_FRAME = ('iframe:is([src*="youtube" i], [src*="vimeo.com" i], [src*="dailymotion.com" i],'
+                    ' [src*="jwplayer" i], [src*="jwplatform" i], [src*="player" i])')
 DARKREADER_CSS = """
 html:not([%(attr)s]) {
     filter: invert(90%%) hue-rotate(180deg) !important;
@@ -3567,7 +3571,7 @@ html:not([%(attr)s]) %(bg)s > :is(%(media)s) {
 html:not([%(attr)s]) %(bg)s > :not(%(media)s) {
     filter: invert(90%%) hue-rotate(180deg) !important;
 }
-""" % {"attr": DARK_NATIVE_ATTR, "bg": DARK_BG_PICTURE, "media": "img, video, canvas, svg, " + DARK_BG_PICTURE}
+""" % {"attr": DARK_NATIVE_ATTR, "bg": DARK_BG_PICTURE, "media": ", ".join(["img, video, canvas, svg", DARK_VIDEO_FRAME, DARK_BG_PICTURE])}
 
 # Bedtime wind-down turns pages grey. The filter has to sit on <html> too (a filter on
 # <body> would make position:fixed headers scroll away), so with dark mode on, the

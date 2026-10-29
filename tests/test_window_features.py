@@ -92,6 +92,10 @@ PAGES = {
                     "<h1 id='heading'>Buy cars</h1><img id='inside' alt='' width='4' height='4'"
                     " style='background:url(data:image/gif;base64,R0lGODlhAQABAAAAACw=)'></div>"
                     "<img id='alone' alt='' width='4' height='4'></body></html>"),
+    "/darkvideo": ("<html><title>darkvideo</title><body>"
+                   "<iframe id='yt' src='about:blank#https://www.youtube-nocookie.com/embed/x'></iframe>"
+                   "<iframe id='player' src='about:blank#/video-player/1'></iframe>"
+                   "<iframe id='comments' src='about:blank#/comments'></iframe></body></html>"),
     "/hiding": ("<html><title>hiding</title><body><div id='ad' class='arrow-test-ad'>ad</div>"
                 "<div id='ck' class='arrow-test-cookie'>cookies</div><div id='site' class='arrow-site-only'>site</div>"
                 "<p id='ok'>text</p></body></html>"),
@@ -451,6 +455,20 @@ class WindowFeatureTests(unittest.TestCase):
         self.assertIn("invert(0.9)", heading, "the text on it darkened again")
         self.assertEqual(inside, "none", "a picture inside it is already right")
         self.assertIn("invert(1)", alone)
+
+    def test_dark_mode_turns_back_embedded_video_players(self):
+        # A YouTube or news-site player is an iframe; the page's invert reached it and nothing turned
+        # it back, so embedded videos showed inverted (seen on moneycontrol.com).
+        win = self.win
+        win.set_dark_mode(True)
+        self.addCleanup(win.set_dark_mode, False)
+        wv = self.load("/darkvideo", "darkvideo")
+        filters = "JSON.stringify(['yt', 'player', 'comments'].map(id => getComputedStyle(document.getElementById(id)).filter))"
+        self.assertTrue(spin(lambda: "invert" in (js(wv, filters) or ""), 3))
+        yt, player, comments = json.loads(js(wv, filters))
+        self.assertIn("invert(1)", yt, "YouTube embed turned back")
+        self.assertIn("invert(1)", player, "a site's own video player turned back")
+        self.assertEqual(comments, "none", "other iframes stay darkened with the page")
 
     def test_dark_mode_notices_a_dark_theme_that_arrives_while_loading(self):
         # Heavy sites paint long before they finish loading and their dark styles come in between.
