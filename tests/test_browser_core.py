@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
@@ -1403,6 +1404,11 @@ class SearchTests(unittest.TestCase):
                      "file:///home/me/page.html", "data:text/html,x", "view-source:https://x.example", "mailto:a@b.c"):
             self.assertFalse(bb.typed_text_is_address(text), text)
         self.assertTrue(bb.typed_text_is_address("example.com:8080/x"))
+        # IPv6 addresses go in square brackets; "[::1]:8080" (a local dev server) used to be searched for
+        for text in ("[::1]", "[::1]:8080", "[2001:db8::1]/admin"):
+            self.assertTrue(bb.typed_text_is_address(text), text)
+        for text in ("[::1]:x", "[zz]", "[::1"):
+            self.assertFalse(bb.typed_text_is_address(text), text)
 
     def test_search_templates_from_users(self):
         self.assertEqual(bb.normalize_search_template(" https://x.example/s?q=%s "), "https://x.example/s?q={query}")
@@ -1685,6 +1691,76 @@ class WellbeingTests(TmpDirCase):
         pause = bb.WELLBEING_BREAK_RESET_SECONDS + 5
         self.assertEqual(browse(1300 + pause, 1300 + pause + 595), [], "a 5-minute pause starts the count again")
         self.assertEqual(browse(1300 + pause + 595, 1300 + pause + 700), [1300 + pause + 600])
+
+class SafeWriteTests(TmpDirCase):
+    def test_a_save_that_fails_halfway_keeps_the_previous_file(self):
+        # Settings were written straight over settings.json: a full disk or a power cut left it cut off,
+        # and the next start loaded it as nothing, so every setting went back to its default.
+        path = os.path.join(self.tmp, "settings.json")
+        bb._write_json_private(path, {"clear_history_on_exit": True})
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        with self.assertRaises(TypeError):
+            bb._write_json_private(path, {"clear_history_on_exit": False, "broken": object()})
+        with open(path) as f:
+            self.assertEqual(json.load(f), {"clear_history_on_exit": True})
+        self.assertEqual(os.listdir(self.tmp), ["settings.json"], "no temporary file left behind")
+
+    def test_settings_that_are_not_a_dictionary_load_as_none(self):
+        path = os.path.join(self.tmp, "settings.json")
+        write_json(path, ["not", "settings"])
+        self.addCleanup(setattr, bb, "CONFIG_FILE", bb.CONFIG_FILE)
+        bb.CONFIG_FILE = path
+        self.assertEqual(bb.load_persistent_settings(), {})
+
+
+class SingleInstanceTests(unittest.TestCase):
+    """A link opened from another app while the browser runs goes to that browser instead of starting a
+    second one (which restored the whole session again and fought the first over the same files)."""
+
+    def setUp(self):
+        try:
+            self.address = bb.Gio.dbus_address_get_for_bus_sync(bb.Gio.BusType.SESSION, None)
+        except bb.GLib.Error:
+            self.skipTest("no session bus")
+        self.addCleanup(setattr, bb, "CONFIG_DIR", bb.CONFIG_DIR)
+        bb.CONFIG_DIR = tempfile.mkdtemp(prefix="arrow-instance-")  # a profile of its own, never the user's
+        self.addCleanup(shutil.rmtree, bb.CONFIG_DIR, ignore_errors=True)
+
+    def connect(self):
+        flags = (bb.Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+                 | bb.Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION)
+        bus = bb.Gio.DBusConnection.new_for_address_sync(self.address, flags, None, None)
+        self.addCleanup(bus.close_sync, None)
+        return bus
+
+    def test_a_second_launch_hands_its_links_to_the_first(self):
+        first, second = self.connect(), self.connect()
+        self.assertEqual(bb.claim_instance(first), (first, True))
+        self.assertEqual(bb.claim_instance(second), (second, False))
+        opened = []
+        self.addCleanup(setattr, bb, "open_in_running_browser", bb.open_in_running_browser)
+        bb.open_in_running_browser = lambda uris, token="": opened.append(uris)
+        bb.serve_instance(first)
+        result = []
+        sender = threading.Thread(
+            target=lambda: result.append(bb.hand_off_to_running_instance(second, ["https://example.com/"])))
+        sender.start()
+        context, deadline = bb.GLib.MainContext.default(), time.time() + 10
+        while (sender.is_alive() or not opened) and time.time() < deadline:
+            context.iteration(False)
+            time.sleep(0.01)
+        self.assertEqual(result, [True])
+        self.assertEqual(opened, [["https://example.com/"]])
+
+    def test_with_no_browser_running_the_launch_starts_one(self):
+        self.assertFalse(bb.hand_off_to_running_instance(self.connect(), ["https://example.com/"]))
+
+    def test_each_profile_has_its_own_browser(self):
+        name = bb.instance_bus_name()
+        self.assertTrue(bb.Gio.dbus_is_name(name), name)
+        bb.CONFIG_DIR += "-other"
+        self.assertNotEqual(bb.instance_bus_name(), name)
+
 
 if __name__ == "__main__":
     unittest.main()

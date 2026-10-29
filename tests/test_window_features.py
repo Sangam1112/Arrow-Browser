@@ -54,6 +54,9 @@ PAGES = {
                "<input id='u' type='text' name='user'><input id='p' type='password' name='pw'>"
                "<button id='go' type='submit'>Sign in</button></form></body></html>"),
     "/done": "<html><title>done</title><body>ok</body></html>",
+    # a form (a login, a payment) sent to a site that can't be reached
+    "/postdead": (f"<html><title>postdead</title><body><form method='post' action='http://127.0.0.1:{DEAD_PORT}/pay'>"
+                  "<input name='amount' value='100'></form></body></html>"),
     "/js": "<html><head><title>js-off</title></head><body><script>document.title='js-ran'</script></body></html>",
     "/pathrules": ("<html><title>pathrules</title><body><img src='/pagead/p.png'><img src='/sub/ads/p.png'>"
                    "<img src='/telemetry.png'><img src='/pagead/stream.m3u8'><img src='/roads/ok.png'><img src='/adsense.png'>"
@@ -834,6 +837,9 @@ class WindowFeatureTests(unittest.TestCase):
         folder = tempfile.mkdtemp(dir=_HOME)
         self.win.download_dir = folder
         self.addCleanup(setattr, self.win, "download_dir", "")
+        # .bin is a file that can run programs: answer the "Save blob.bin?" question instead of waiting on it
+        self.addCleanup(setattr, self.win, "_confirm_risky_download", self.win._confirm_risky_download)
+        self.win._confirm_risky_download = lambda name, source: True
         before = len(self.win.downloads_history)
         self.load("/blobframe", "blobframe")
         self.assertTrue(spin(lambda: Handler.hits.get("/blob.bin", 0) > 0, 5))
@@ -852,6 +858,80 @@ class WindowFeatureTests(unittest.TestCase):
         wv = win.get_active_webview()
         self.assertTrue(spin(lambda: wv.get_title() == "typed-file", 8), wv.get_uri())
 
+    def test_an_address_typed_in_capitals_opens_instead_of_being_searched(self):
+        # "HTTPS://..." (pasted from a document that capitalised it) went to the search engine.
+        self.addCleanup(self.close_new_tabs, self.win._tab_boxes())
+        win = self.win
+        wv = win.create_new_tab(self.base + "/blank")
+        self.assertTrue(spin(lambda: not wv.is_loading(), 10))
+        win.url_entry.set_text(self.base.replace("http://", "HTTP://") + "/thin")
+        win.on_url_activate(win.url_entry)
+        self.assertTrue(spin(lambda: wv.get_title() == "thin", 8), wv.get_uri())
+        self.assertEqual(wv.get_uri(), self.base + "/thin")
+
+    def test_a_link_from_another_app_opens_in_the_running_browser(self):
+        # Every link opened from another app used to start a second browser; the later launch now hands it
+        # to this one (claim_instance / hand_off_to_running_instance in main()).
+        win = self.win
+        before = win._tab_boxes()
+        self.addCleanup(self.close_new_tabs, before)
+        bb.open_in_running_browser([self.base + "/thin", "javascript:alert(1)", "data:text/html,x"])
+        new = [tb for tb in win._tab_boxes() if tb not in before]
+        self.assertEqual(len(new), 1, "only web and file addresses are opened")
+        self.assertTrue(spin(lambda: new[0]._arrow_webview.get_title() == "thin", 10))
+        self.assertIs(win.get_active_tab_box(), new[0])
+        bb.open_in_running_browser([])
+        self.assertEqual(len(win._tab_boxes()), len(before) + 2, "started again from the menu: a new tab")
+        self.assertEqual(win.get_active_webview().get_uri(), win.homepage)
+
+    def test_clearing_history_also_forgets_closed_tabs(self):
+        # Reopen Closed Tab still brought back pages from before "Clear history, cookies and cache".
+        win = self.win
+        before = win._tab_boxes()
+        wv = win.create_new_tab(self.base + "/thin")
+        self.assertTrue(spin(lambda: wv.get_title() == "thin", 10))
+        win.close_tab(next(tb for tb in win._tab_boxes() if tb not in before))
+        self.assertTrue(win._closed_tabs)
+
+        def answer():
+            for w in Gtk.Window.list_toplevels():
+                if isinstance(w, Gtk.MessageDialog) and w.get_visible() and "Cleared" in (w.props.text or ""):
+                    w.response(Gtk.ResponseType.OK)
+            return True
+        source = GLib.timeout_add(100, answer)
+        self.addCleanup(GLib.source_remove, source)
+        win.on_clear_cache_clicked(None)
+        self.assertEqual(win._closed_tabs, [])
+        tabs = len(win._tab_boxes())
+        win.reopen_closed_tab()
+        self.assertEqual(len(win._tab_boxes()), tabs, "nothing to reopen")
+
+    def test_restart_saves_what_was_waiting_and_asks_about_running_downloads(self):
+        # os.execv replaces the process at once: saves still waiting on their timers (tabs and pages from the
+        # last few seconds) were lost, and running downloads stopped without a word.
+        win = self.win
+        restarts = []
+        self.addCleanup(setattr, bb.os, "execv", bb.os.execv)
+        bb.os.execv = lambda *args: restarts.append(args)
+        page = {"url": self.base + "/restart-check", "title": "restart-check"}
+        win.url_history.insert(0, page)
+        self.addCleanup(lambda: page in win.url_history and win.url_history.remove(page))
+        win._schedule_history_save()
+        download = {"status": "Downloading..."}
+        win.downloads_history.append(download)
+        self.addCleanup(win.downloads_history.remove, download)
+        asked = []
+        win._ask = lambda *args, **kwargs: asked.append(args[1]) or False
+        self.addCleanup(delattr, win, "_ask")
+        win.restart_application()
+        self.assertEqual((asked, restarts), (["Stop 1 download and restart?"], []), "Cancel keeps it running")
+        download["status"] = "Completed ✅"
+        win.restart_application()
+        self.assertEqual(len(restarts), 1)
+        self.assertIsNone(win._history_save_source, "the waiting save was done, not left to its timer")
+        with open(bb.HISTORY_FILE) as f:
+            self.assertEqual(json.load(f)[0]["url"], page["url"])
+
     def test_script_redirect_to_dead_site_shows_error_page_instead_of_retrying_forever(self):
         # After the failed redirect, WebKit's URI goes back to the redirecting page (not empty), which used to
         # reset the retry counter on every attempt: the tab retried forever and the address bar flickered.
@@ -866,6 +946,22 @@ class WindowFeatureTests(unittest.TestCase):
         self.assertEqual(wv.get_uri(), f"http://127.0.0.1:{DEAD_PORT}/gone", "the address shows where it failed")
         spin(lambda: False, 2 * self.win.LOAD_RETRY_DELAY_MS / 1000)
         self.assertLessEqual(len(failures), 1 + self.win.MAX_AUTO_RETRY_LOAD_FAILURES, "kept retrying")
+
+    def test_a_form_that_failed_to_send_is_not_sent_again_behind_the_users_back(self):
+        # The silent retry after a failed load asked for the form's address without its data, so a login or a
+        # payment that didn't go through came back as the bare page, as if it had been turned down.
+        self.addCleanup(self.close_new_tabs, self.win._tab_boxes())
+        failures = []
+        real = self.win.on_load_failed  # connected when the tab is made, and it stops the signal
+        self.win.on_load_failed = lambda *args: failures.append(args[2]) or real(*args)
+        self.addCleanup(delattr, self.win, "on_load_failed")
+        wv = self.win.create_new_tab(self.base + "/postdead")
+        self.assertTrue(spin(lambda: wv.get_title() == "postdead" and not wv.is_loading(), 10))
+        js(wv, "document.forms[0].submit(); 1")
+        self.assertTrue(spin(lambda: "didn't load" in (js(wv, "document.body.innerText") or ""), 10),
+                        f"no error page after {len(failures)} failed loads")
+        spin(lambda: False, 2 * self.win.LOAD_RETRY_DELAY_MS / 1000)
+        self.assertEqual(failures, [f"http://127.0.0.1:{DEAD_PORT}/pay"], "the form's address was loaded again")
 
     def test_failed_load_retry_gives_way_to_the_users_next_page(self):
         # A load that fails after committing (the connection drops mid-page) still ends with FINISHED. That used to

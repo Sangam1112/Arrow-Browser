@@ -1514,6 +1514,13 @@ def typed_text_is_address(text):
     if re.match(r"[a-z][a-z0-9+-]*:(?![0-9])", text, re.IGNORECASE):
         return False  # another scheme (file:, data:, view-source:, mailto:), not a host; on_url_activate opens file:
     host_part, slash, _path = text.partition("/")
+    if host_part.startswith("["):  # an IPv6 address: "[::1]:8080"
+        inside, bracket, port = host_part[1:].partition("]")
+        try:
+            ipaddress.IPv6Address(inside)
+        except ValueError:
+            return False
+        return bool(bracket) and (not port or (port[0] == ":" and port[1:].isdigit()))
     host, colon, port = host_part.partition(":")
     if not host:
         return False
@@ -1570,7 +1577,9 @@ def load_persistent_settings():
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
     except Exception as e:
         print("Settings load note:", e)
     return {}
@@ -1578,10 +1587,21 @@ def load_persistent_settings():
 def _write_json_private(path, data, indent=2):
     """Write JSON with 0600 permissions from creation, not applied after the
     fact, so browsing history/session data is never briefly world/group
-    readable and isn't left exposed if a chmod step were skipped."""
-    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=indent)
+    readable and isn't left exposed if a chmod step were skipped.
+    The data goes to a temporary file that then replaces the old one, so a write that fails halfway (a full
+    disk, a power cut) leaves the previous file whole instead of a cut-off one that loads as nothing."""
+    fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=os.path.basename(path) + ".",
+                                     suffix=".tmp")  # mkstemp creates it 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=indent)
+        os.replace(temp_path, path)
+    except BaseException:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
 
 def save_persistent_settings(settings):
     try:
@@ -1602,9 +1622,7 @@ def load_session_state():
 def save_session_state(urls, pinned=()):
     try:
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        temp_file = SESSION_FILE + ".tmp"
-        _write_json_private(temp_file, {"urls": urls, "pinned": list(pinned), "timestamp": time.time()}, indent=None)
-        os.replace(temp_file, SESSION_FILE)
+        _write_json_private(SESSION_FILE, {"urls": urls, "pinned": list(pinned), "timestamp": time.time()}, indent=None)
     except Exception as e:
         print("Session save note:", e)
 
@@ -1624,9 +1642,7 @@ def load_url_history():
 def save_url_history(entries):
     try:
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        temp_file = HISTORY_FILE + ".tmp"
-        _write_json_private(temp_file, entries, indent=None)
-        os.replace(temp_file, HISTORY_FILE)
+        _write_json_private(HISTORY_FILE, entries, indent=None)
     except Exception as e:
         print("History save note:", e)
 
@@ -1697,8 +1713,8 @@ def clear_data_left_by_crash():
         return False
     for suffix in ("", "-journal", "-wal", "-shm"):
         _remove_path(COOKIE_DB_FILE + suffix)
-    for path in (HISTORY_FILE, HISTORY_FILE + ".tmp"):
-        _remove_path(path)
+    for path in (HISTORY_FILE, HISTORY_FILE + ".tmp", *glob.glob(glob.escape(HISTORY_FILE) + ".*.tmp")):
+        _remove_path(path)  # a write the crash cut short leaves its temporary file
     for base_name, names in WEBKIT_SITE_DATA:
         base = globals()[base_name]
         for name in names:
@@ -1723,9 +1739,7 @@ def load_bookmarks():
 def save_bookmarks(entries):
     try:
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        temp_file = BOOKMARKS_FILE + ".tmp"
-        _write_json_private(temp_file, entries)
-        os.replace(temp_file, BOOKMARKS_FILE)
+        _write_json_private(BOOKMARKS_FILE, entries)
     except Exception as e:
         print("Bookmarks save note:", e)
 
@@ -2030,9 +2044,7 @@ def load_site_settings():
 def save_site_settings(settings):
     try:
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        temp_file = SITE_SETTINGS_FILE + ".tmp"
-        _write_json_private(temp_file, settings)
-        os.replace(temp_file, SITE_SETTINGS_FILE)
+        _write_json_private(SITE_SETTINGS_FILE, settings)
     except Exception as e:
         print("Site settings save note:", e)
 
@@ -6696,10 +6708,13 @@ class ArrowBrowserWindow(Gtk.Window):
         if decision_type == WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
             # Checked here, before anything is sent: by load-changed STARTED a clicked link's request is already
             # out, and the view still reports the previous page's address. Frames are checked too.
-            uri = decision.get_navigation_action().get_request().get_uri() or ""
+            request = decision.get_navigation_action().get_request()
+            uri = request.get_uri() or ""
             if self._stop_lookalike(webview, uri):
                 decision.ignore()
                 return True
+            if (request.get_http_method() or "GET").upper() != "GET":
+                webview._arrow_sent_form_uri = uri  # a failed load of it is not retried (see on_load_failed)
             self._note_link_upgrade(decision)
             return self._secure_first_navigation(webview, decision)
         # Only response decisions (i.e. we already have headers back and
@@ -6802,7 +6817,10 @@ class ArrowBrowserWindow(Gtk.Window):
             self._show_https_warning(webview, failing_uri, error.message)
             return True
 
-        if count <= self.MAX_AUTO_RETRY_LOAD_FAILURES:
+        # A form that was sent (a login, a payment) is not sent again behind the user's back, and a retry
+        # would only ask for its address without the form's data.
+        sent_form = failing_uri == getattr(webview, "_arrow_sent_form_uri", None)
+        if count <= self.MAX_AUTO_RETRY_LOAD_FAILURES and not sent_form:
             # Many of these (e.g. "Connection reset by peer" mid-TLS-handshake)
             # are transient and succeed on a plain retry, so retry once
             # silently before showing the user an error page.
@@ -7747,6 +7765,11 @@ class ArrowBrowserWindow(Gtk.Window):
             return False
 
     def restart_application(self):
+        running = sum(1 for e in self.downloads_history if e.get("status") == "Downloading...")
+        if running and not self._ask(None, f"Stop {running} download{'s' if running > 1 else ''} and restart?",
+                                     "A download that is still running stops when Arrow Browser restarts. "
+                                     "Wait for it to finish, or restart now and download it again.", "Restart"):
+            return
         # os.execv replaces the process image directly — no "destroy" signal
         # fires, so the active tab's in-progress time-on-page would
         # otherwise never reach the History Dashboard for this session.
@@ -7754,6 +7777,13 @@ class ArrowBrowserWindow(Gtk.Window):
             tab_box = self.notebook.get_nth_page(i)
             if hasattr(tab_box, '_arrow_webview'):
                 self._flush_page_view(tab_box._arrow_webview)
+        # Nor would the saves still waiting on their timers: tabs opened and pages visited in the last few
+        # seconds, and up to a minute of screen time.
+        self._flush_pending_saves()
+        if not self.is_private:
+            save_privacy_stats(self.stats)
+        if wellbeing_tracker().dirty:
+            wellbeing_tracker().save()
         try:
             script = getattr(self, '_installed_script_path', None) or os.path.abspath(__file__)
             # No arguments: links the browser was started with are already in the saved session.
@@ -7832,18 +7862,20 @@ class ArrowBrowserWindow(Gtk.Window):
                 webview.load_uri(text)
                 webview.grab_focus()
             return
-        if not text.startswith("http://") and not text.startswith("https://") and not text.startswith("about:"):
-            host_candidate = text.split('/', 1)[0].split(':', 1)[0]
-            if typed_text_is_address(text):
-                # Bare local hostnames (routers, printers, dev boxes) rarely
-                # have a real HTTPS cert to upgrade to; _secure_uri() below
-                # leaves them on http:// too.
-                scheme = "http://" if is_local_network_host(host_candidate) else "https://"
-                text = scheme + text
-            else:
-                text = (resolve_search_shortcut(text, self.custom_search_engines)
-                        or search_url(self.search_engine_templates().get(self.search_engine,
-                                                                         SEARCH_ENGINES[DEFAULT_SEARCH_ENGINE]), text))
+        scheme = re.match(r"https?(?=://)|about(?=:)", text, re.IGNORECASE)
+        if scheme:
+            text = scheme.group().lower() + text[scheme.end():]  # "HTTPS://" as pasted from a document
+        elif typed_text_is_address(text):
+            # Bare local hostnames (routers, printers, dev boxes) rarely
+            # have a real HTTPS cert to upgrade to; _secure_uri() below
+            # leaves them on http:// too.
+            host = text.split("/", 1)[0]
+            host = host[1:].partition("]")[0] if host.startswith("[") else host.split(":", 1)[0]
+            text = ("http://" if is_local_network_host(host) else "https://") + text
+        else:
+            text = (resolve_search_shortcut(text, self.custom_search_engines)
+                    or search_url(self.search_engine_templates().get(self.search_engine,
+                                                                     SEARCH_ENGINES[DEFAULT_SEARCH_ENGINE]), text))
 
         webview = self.get_active_webview()
         if webview:
@@ -8190,6 +8222,7 @@ class ArrowBrowserWindow(Gtk.Window):
             webview._arrow_mixed_content = False
         elif load_event == WebKit2.LoadEvent.COMMITTED:
             webview._arrow_committed = True
+            webview._arrow_sent_form_uri = None
             webview._arrow_download_state = None  # a new page starts with one download allowed again
             webview._arrow_popup_state = None  # and with pop-ups blocked again
             webview._arrow_failed_loads = None  # and nothing blocked on it yet
@@ -11924,6 +11957,7 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         save_url_history(self.url_history)
         self.url_completion_store.clear()
         self._page_view_start.clear()
+        self._closed_tabs.clear()  # or Reopen Closed Tab would still bring back pages from before
 
         self.statusbar.push(self.context_id, "🧹 Browsing History & Cache Cleared!")
 
@@ -11956,8 +11990,95 @@ def handle_stop_signals():
         GLib.unix_signal_add(GLib.PRIORITY_HIGH, signum, close_all_windows)
 
 
+# ---------------------------------------------------------------------------
+# One running browser per profile. Every link opened from another app runs `arrow-browser %U`; that used
+# to start a second browser, which restored the whole session again, and the two then overwrote each
+# other's history, bookmarks and open tabs. The first copy owns a name on the session bus; a later one
+# hands its links to it and exits.
+# ---------------------------------------------------------------------------
+INSTANCE_INTERFACE = "io.github.Sangam1112.ArrowBrowser"
+INSTANCE_OBJECT_PATH = "/io/github/Sangam1112/ArrowBrowser"
+INSTANCE_XML = f"""<node><interface name="{INSTANCE_INTERFACE}"><method name="Open">
+<arg type="as" name="uris" direction="in"/><arg type="s" name="activation_token" direction="in"/>
+</method></interface></node>"""
+INSTANCE_HANDOFF_TIMEOUT_MS = 5000
+
+
+def instance_bus_name():
+    """The bus name for this profile (config folder), so another profile, or the tests' throw-away HOME,
+    runs a browser of its own. Under the Flatpak app ID, which a Flatpak may own without extra permission."""
+    digest = hashlib.sha256(os.path.realpath(CONFIG_DIR).encode("utf-8")).hexdigest()[:16]
+    return f"io.github.Sangam1112.Arrow-Browser.p{digest}"
+
+
+def claim_instance(bus=None):
+    """(bus, True) when this is the first browser for the profile, (bus, False) when one is already running
+    (this copy then waits in line for the name), (None, True) without a session bus: it just starts."""
+    try:
+        bus = bus or Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        reply = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                              "RequestName", GLib.Variant("(su)", (instance_bus_name(), 0)),
+                              GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+    except GLib.Error as e:
+        print("Single-instance note:", e.message)
+        return None, True
+    return bus, reply in (1, 4)  # primary owner / already the owner; 2 = queued behind the running one
+
+
+def hand_off_to_running_instance(bus, uris):
+    """Give the links to the browser that is already running. False when it doesn't answer (it is just
+    restarting after an update, or stuck): this copy then starts as it always did."""
+    token = os.environ.get("XDG_ACTIVATION_TOKEN") or os.environ.get("DESKTOP_STARTUP_ID") or ""
+    try:
+        bus.call_sync(instance_bus_name(), INSTANCE_OBJECT_PATH, INSTANCE_INTERFACE, "Open",
+                      GLib.Variant("(ass)", (list(uris), token)), None, Gio.DBusCallFlags.NONE,
+                      INSTANCE_HANDOFF_TIMEOUT_MS, None)
+        return True
+    except GLib.Error as e:
+        print("Single-instance note:", e.message)
+        return False
+
+
+def open_in_running_browser(uris, activation_token=""):
+    """Links handed over by a later launch open as new tabs in the normal window, which comes to the front.
+    No links (the browser was started again from the menu): a new tab with the home page."""
+    uris = [u for u in uris if isinstance(u, str) and u.startswith(("http://", "https://", "file://"))]
+    window = next((w for w in Gtk.Window.list_toplevels()
+                   if isinstance(w, ArrowBrowserWindow) and not w.is_private and not w._window_released), None)
+    if window is None:  # only private windows are open: start a normal one, as a new launch would
+        window = ArrowBrowserWindow(startup_urls=uris)
+        window.show_all()
+    else:
+        for uri in uris or [window.homepage]:
+            window.create_new_tab(uri)
+    if activation_token:
+        window.set_startup_id(activation_token)  # lets the desktop bring it to the front, not just flash it
+    window.present()
+
+
+def serve_instance(bus):
+    """Answer later launches' Open calls."""
+    def on_call(_conn, _sender, _path, _iface, method, params, invocation):
+        if method == "Open":
+            uris, token = params.unpack()
+            invocation.return_value(None)
+            GLib.idle_add(lambda: (open_in_running_browser(uris, token), False)[1])
+    interface = Gio.DBusNodeInfo.new_for_xml(INSTANCE_XML).interfaces[0]
+    register = getattr(bus, "register_object_with_closures2", None) or bus.register_object  # GLib 2.84+
+    try:
+        register(INSTANCE_OBJECT_PATH, interface, on_call, None, None)
+    except GLib.Error as e:
+        print("Single-instance note:", e.message)
+
+
 def main():
-    app = ArrowBrowserWindow(startup_urls=startup_urls_from_args(sys.argv[1:]))
+    startup_urls = startup_urls_from_args(sys.argv[1:])
+    bus, first = claim_instance()
+    if not first and hand_off_to_running_instance(bus, startup_urls):
+        return
+    if bus is not None:
+        serve_instance(bus)
+    app = ArrowBrowserWindow(startup_urls=startup_urls)
     # Quitting is handled by on_window_destroy() (connected in __init__),
     # which only calls Gtk.main_quit() once every open top-level window
     # (main + any private windows) has actually closed.
