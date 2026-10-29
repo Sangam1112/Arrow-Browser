@@ -95,6 +95,20 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="1.0.8" date="2026-10-29">
+      <description>
+        <ul>
+          <li>Toolbar buttons can sit all on the left or all on the right</li>
+          <li>A link opened from another app opens in the Arrow already running, not a second copy</li>
+          <li>A failed save can no longer reset your settings</li>
+          <li>Restarting after an update keeps the last tabs and asks about running downloads</li>
+          <li>Clearing history also forgets closed tabs</li>
+          <li>Addresses typed in capitals open the site instead of searching</li>
+          <li>A form that failed to send is not quietly loaded again</li>
+          <li>Embedded videos no longer show inverted in dark mode</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.0.7" date="2026-10-27">
       <description>
         <ul>

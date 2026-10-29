@@ -4,6 +4,20 @@ All notable changes to Arrow Browser. Versions follow `MAJOR.MINOR.PATCH`.
 Releases are signed; the in-app updater only installs a release whose signature verifies.
 Notes from before 1.0.0 (Bharat Browser, and Arrow up to 1.6.9 in the old repository) are in [docs/HISTORY.md](docs/HISTORY.md).
 
+## [1.0.8] - 2026-10-29
+
+### Added
+- **Toolbar buttons can sit all on one side.** Settings → General → Toolbar buttons (and the first-start setup) now offer Left, Split and Right. Left and Right put Back, Forward, the menu and the other buttons all on one side of the address bar, closer to the hand you use. Split, the old layout, stays the default.
+
+### Fixed
+- **A link opened from another app no longer starts a second Arrow.** Clicking a link in your mail or chat app while Arrow was open started a whole new browser. It reopened every tab from your last session as well as the link, and the two copies then overwrote each other's history, bookmarks and open tabs, so things you did in one were lost. The link now opens as a new tab in the Arrow you already have, which comes to the front. Starting Arrow again from the menu opens a new tab there too.
+- **A failed save can no longer wipe your settings.** Settings, privacy stats and screen time were written straight over their files. A full disk or a power cut at that moment left the file cut off, and on the next start every setting went back to its default, including "Clear history when closing". Every file is now written to a temporary copy first and swapped in, so a failed save keeps the previous one.
+- **Restarting after an update keeps your last few seconds.** "Restart Now" restarted at once, before tabs and pages from the last few seconds (and up to a minute of screen time) were saved. They are saved first now, and if a download is still running Arrow asks before stopping it.
+- **"Clear history, cookies and cache" also forgets closed tabs.** Reopen Closed Tab (Ctrl+Shift+T) could still bring back pages from before the clear.
+- **Addresses typed or pasted in capitals open the site.** `HTTPS://example.com`, as some documents capitalise it, went to the search engine instead. IPv6 addresses such as `[::1]:8080` now open too.
+- **A form that failed to send isn't quietly loaded again.** When a login or payment couldn't reach the site, Arrow retried by loading the form's address without its data, which looked as if the form had been turned down. It now shows the "didn't load" page straight away.
+- **Embedded videos no longer show inverted in dark mode,** such as the player on moneycontrol.com. Video players in frames (YouTube, a site's own player) are now turned back like other videos; other frames, such as comments, stay dark with the page.
+
 ## [1.0.7] - 2026-10-27
 
 ### Security
