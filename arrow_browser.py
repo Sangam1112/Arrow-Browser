@@ -4082,6 +4082,10 @@ COPIED_SELECTION_JS = r"""
 # higher priority, so it only needs to change colours, and it can be added or removed while running.
 UI_THEMES = ("dark", "light")
 DEFAULT_UI_THEME = "dark"
+# Where the toolbar buttons sit around the address bar (Settings → General): "split" keeps Back/Forward/Reload
+# on the left and the rest on the right; "left" and "right" put them all on one side, closer to one hand.
+TOOLBAR_SIDES = ("split", "left", "right")
+DEFAULT_TOOLBAR_SIDE = "split"
 LIGHT_THEME_CSS = b"""
 window { background-color: #f4f6fa; }
 headerbar.arrow-titlebar { background-color: #eef1f6; border-bottom-color: rgba(15, 23, 42, 0.08); color: #0f172a; }
@@ -4276,6 +4280,9 @@ class ArrowBrowserWindow(Gtk.Window):
         self.ui_theme = saved_settings.get("ui_theme", DEFAULT_UI_THEME)
         if self.ui_theme not in UI_THEMES:
             self.ui_theme = DEFAULT_UI_THEME
+        self.toolbar_side = saved_settings.get("toolbar_side", DEFAULT_TOOLBAR_SIDE)
+        if self.toolbar_side not in TOOLBAR_SIDES:
+            self.toolbar_side = DEFAULT_TOOLBAR_SIDE
         self.download_dir = saved_settings.get("download_dir", "") or ""
         self.adblock_enabled = saved_settings.get("adblock_enabled", True)
         self.clearurls_enabled = saved_settings.get("clearurls_enabled", True)
@@ -4555,6 +4562,9 @@ class ArrowBrowserWindow(Gtk.Window):
         self.btn_settings = line_icon_button("ellipsis-vertical", "Menu")
         self.btn_settings.connect("clicked", self.show_main_menu)
         top_bar.pack_start(self.btn_settings, False, False, 0)
+        self._toolbar_items = (nav_group, self.url_entry, self.btn_new_tab, action_group, self.btn_shield,
+                               self.btn_settings)
+        self._arrange_toolbar()
 
         self.content_filter = None
         self.cosmetic_filters = {}  # "ads" / "cookies" -> compiled element-hiding filter
@@ -8244,6 +8254,7 @@ class ArrowBrowserWindow(Gtk.Window):
         return ({
             "dark_mode": self.dark_mode_active,
             "ui_theme": self.ui_theme,
+            "toolbar_side": self.toolbar_side,
             "adblock_enabled": self.adblock_enabled,
             "clearurls_enabled": self.clearurls_enabled,
             "https_enabled": self.https_enabled,
@@ -8281,6 +8292,24 @@ class ArrowBrowserWindow(Gtk.Window):
             return
         self.ui_theme = theme
         apply_ui_theme(theme)
+        self.save_settings()
+
+    def _arrange_toolbar(self):
+        """Puts the address bar first, last or after Back/Forward/Reload, as toolbar_side says."""
+        nav, url, *rest = self._toolbar_items
+        order = {"left": [nav, *rest, url], "right": [url, nav, *rest]}.get(self.toolbar_side, [nav, url, *rest])
+        for position, widget in enumerate(order):
+            self.top_bar.reorder_child(widget, position)
+
+    def set_toolbar_side(self, side):
+        """Where the toolbar buttons sit: "split", "left" or "right" (Settings → General), in every window."""
+        if side not in TOOLBAR_SIDES:
+            return
+        for window in Gtk.Window.list_toplevels():
+            if isinstance(window, ArrowBrowserWindow) and hasattr(window, "_toolbar_items"):
+                window.toolbar_side = side
+                window._arrange_toolbar()
+        self.toolbar_side = side
         self.save_settings()
 
     def set_dark_mode(self, active):
@@ -9017,11 +9046,28 @@ class ArrowBrowserWindow(Gtk.Window):
         for theme, btn in theme_buttons.items():
             btn.connect("toggled", lambda b, t=theme: b.get_active() and self.set_ui_theme(t))
         controls["ui_theme"] = theme_buttons
+        side_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        side_box.get_style_context().add_class("theme-choice")
+        side_buttons = {}
+        group = None
+        for side, label in (("left", "⬅️ Left"), ("split", "↔️ Split"), ("right", "➡️ Right")):
+            btn = Gtk.RadioButton.new_with_label_from_widget(group, label)
+            btn.set_mode(False)
+            group = group or btn
+            side_buttons[side] = btn
+            side_box.pack_start(btn, False, False, 0)
+        side_buttons[self.toolbar_side].set_active(True)
+        for side, btn in side_buttons.items():
+            btn.connect("toggled", lambda b, s=side: b.get_active() and self.set_toolbar_side(s))
+        controls["toolbar_side"] = side_buttons
         self._settings_section(
             gen, "APPEARANCE & READING",
             self._settings_row("🎨", "Browser theme",
                                "How the toolbar, tabs, menus and Settings look. Websites keep their own colours "
                                "unless Dark mode for websites is on.", theme_box),
+            self._settings_row("✋", "Toolbar buttons",
+                               "Put Back, Forward, the menu and the other buttons all on the side of the hand "
+                               "you use, or keep them split around the address bar.", side_box),
             switch("dark_mode_active", "🌙", "Dark mode for websites",
                    "Recolours bright pages dark and leaves sites that are already dark alone.",
                    self.set_dark_mode),
@@ -10747,6 +10793,8 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
                 value = sanitize_homepage_url(value) if isinstance(value, str) else None
             elif key == "ui_theme":
                 value = value if value in UI_THEMES else None
+            elif key == "toolbar_side":
+                value = value if value in TOOLBAR_SIDES else None
             elif key == "break_interval_minutes":
                 value = self._clamp_int(value, current[key], 10, 180)
             elif type(value) is not type(current[key]):
@@ -10758,6 +10806,7 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         if self.search_engine not in self.search_engine_templates():
             self.search_engine = DEFAULT_SEARCH_ENGINE
         apply_ui_theme(self.ui_theme)
+        self.set_toolbar_side(self.toolbar_side)
         if self.clear_history_on_exit:
             mark_clear_on_exit_pending()
         else:
@@ -11266,6 +11315,27 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         for theme, btn in theme_buttons.items():
             btn.connect("toggled", guarded(lambda b, t=theme: b.get_active() and self.set_ui_theme(t)))
         look.pack_start(theme_line, False, False, 6)
+        side_heading = Gtk.Label(label="TOOLBAR BUTTONS", xalign=0.0)
+        side_heading.get_style_context().add_class("settings-section-title")
+        look.pack_start(side_heading, False, False, 0)
+        side_line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        side_line.set_homogeneous(True)
+        side_buttons = controls["toolbar_side"] = {}
+        group = None
+        for side, label, hint in (("left", "⬅️  Left", "Every button left of the address bar."),
+                                  ("split", "↔️  Split", "Back and Forward on the left, the rest on the right."),
+                                  ("right", "➡️  Right", "Every button right of the address bar.")):
+            btn = Gtk.RadioButton.new_from_widget(group)
+            btn.set_mode(False)
+            group = group or btn
+            btn.get_style_context().add_class("welcome-choice")
+            btn.add(self._settings_text(label, hint))
+            side_buttons[side] = btn
+            side_line.pack_start(btn, True, True, 0)
+        side_buttons[self.toolbar_side].set_active(True)
+        for side, btn in side_buttons.items():
+            btn.connect("toggled", guarded(lambda b, s=side: b.get_active() and self.set_toolbar_side(s)))
+        look.pack_start(side_line, False, False, 6)
         self._settings_section(
             look, "WEBSITES",
             switch("dark_mode_active", "🌙", "Dark mode for websites",
@@ -11363,6 +11433,7 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             if self.search_engine in engine_buttons:
                 engine_buttons[self.search_engine].set_active(True)
             theme_buttons[self.ui_theme].set_active(True)
+            side_buttons[self.toolbar_side].set_active(True)
             state["syncing"] = False
 
         def go(index):

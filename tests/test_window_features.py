@@ -2652,6 +2652,30 @@ class WindowFeatureTests(unittest.TestCase):
         win.set_ui_theme("neon")
         self.assertEqual(win.ui_theme, "dark", "unknown themes are ignored")
 
+    def test_toolbar_buttons_move_to_one_side_live_and_are_saved(self):
+        win = self.win
+        self.addCleanup(win.set_toolbar_side, "split")
+        self.assertEqual(win.toolbar_side, "split", "split stays the default")
+        order = lambda: [c for c in win.top_bar.get_children() if c in win._toolbar_items]
+        nav, url, *rest = win._toolbar_items
+        self.assertEqual(order(), [nav, url, *rest])
+        dialog = win.build_settings_dialog("general")
+        try:
+            buttons = dialog._arrow_controls["toolbar_side"]
+            self.assertTrue(buttons["split"].get_active())
+            buttons["left"].set_active(True)  # what a click does
+            self.assertEqual(order(), [nav, *rest, url], "every button left of the address bar")
+            with open(bb.CONFIG_FILE) as f:
+                self.assertEqual(json.load(f)["toolbar_side"], "left")
+            buttons["right"].set_active(True)
+            self.assertEqual(order(), [url, nav, *rest], "every button right of the address bar")
+            buttons["split"].set_active(True)
+            self.assertEqual(order(), [nav, url, *rest])
+        finally:
+            dialog.destroy()
+        win.set_toolbar_side("middle")
+        self.assertEqual(win.toolbar_side, "split", "unknown sides are ignored")
+
     def test_toolbar_icons_are_line_icons_in_the_buttons_colour(self):
         win = self.win
         self.addCleanup(win.set_ui_theme, "dark")
@@ -2808,6 +2832,7 @@ class WindowFeatureTests(unittest.TestCase):
             win.set_search_engine(saved[0])
             win.homepage, win.adblock_enabled, win.bookmarks = saved[1], saved[3], saved[4]
             win.set_ui_theme(saved[2])
+            win.set_toolbar_side("split")
             win.secrets.items = saved[5]
             win.first_run_greeted = True
             win.save_settings()
@@ -2862,6 +2887,11 @@ class WindowFeatureTests(unittest.TestCase):
         dialog._arrow_go(3)
         c["ui_theme"]["light"].set_active(True)
         self.assertEqual(win.ui_theme, "light")
+        self.assertTrue(c["toolbar_side"]["split"].get_active())
+        c["toolbar_side"]["left"].set_active(True)
+        self.assertEqual(win.toolbar_side, "left")
+        self.assertEqual(win.top_bar.get_children().index(win.url_entry), len(win._toolbar_items) - 1,
+                         "the address bar moved after every button")
         dialog._arrow_go(4)
         c["adblock_enabled"].set_active(False)
         self.assertFalse(win.adblock_enabled)
