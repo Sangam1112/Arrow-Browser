@@ -1713,6 +1713,48 @@ class SafeWriteTests(TmpDirCase):
         self.assertEqual(bb.load_persistent_settings(), {})
 
 
+class SettingsFromTwoWindowsTests(TmpDirCase):
+    """Each window read settings.json when it opened and saved its whole copy: a private window opened before
+    dark mode was turned on in the normal window turned it off again with its next change."""
+
+    class Window:
+        save_settings = bb.ArrowBrowserWindow.save_settings
+
+        def __init__(self, **settings):
+            self.settings = dict(settings)
+            self._settings_seen = dict(settings)
+
+        def _settings_snapshot(self):
+            return dict(self.settings)
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(setattr, bb, "CONFIG_FILE", bb.CONFIG_FILE)
+        self.addCleanup(setattr, bb, "CONFIG_DIR", bb.CONFIG_DIR)
+        bb.CONFIG_DIR, bb.CONFIG_FILE = self.tmp, os.path.join(self.tmp, "settings.json")
+
+    def test_a_window_writes_only_what_it_changed(self):
+        normal = self.Window(dark_mode=False, ui_theme="dark", engines=[])
+        private = self.Window(dark_mode=False, ui_theme="dark", engines=[])
+        normal.settings["dark_mode"] = True
+        normal.save_settings()
+        private.settings["ui_theme"] = "light"
+        private.save_settings()
+        self.assertEqual(bb.load_persistent_settings(), {"dark_mode": True, "ui_theme": "light", "engines": []})
+        normal.settings["engines"].append({"name": "Local"})  # changed in place, like the search engine list
+        normal.save_settings()
+        normal.settings["engines"].append({"name": "Other"})
+        normal.save_settings()
+        self.assertEqual(bb.load_persistent_settings()["engines"], [{"name": "Local"}, {"name": "Other"}])
+        self.assertEqual(bb.load_persistent_settings()["ui_theme"], "light", "the private window's change stays")
+
+    def test_a_restored_backup_writes_everything(self):
+        bb.save_persistent_settings({"dark_mode": True, "kept": 1})
+        restored = self.Window(dark_mode=False)
+        restored.save_settings(everything=True)
+        self.assertEqual(bb.load_persistent_settings(), {"dark_mode": False, "kept": 1})
+
+
 class SingleInstanceTests(unittest.TestCase):
     """A link opened from another app while the browser runs goes to that browser instead of starting a
     second one (which restored the whole session again and fought the first over the same files)."""

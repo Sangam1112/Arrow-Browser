@@ -1595,6 +1595,8 @@ def _write_json_private(path, data, indent=2):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=indent)
+            f.flush()
+            os.fsync(f.fileno())  # on the disk before it takes the old file's place, or a power cut can leave it empty
         os.replace(temp_path, path)
     except BaseException:
         try:
@@ -4333,6 +4335,7 @@ class ArrowBrowserWindow(Gtk.Window):
         self.stats = {"since": time.time(), "params": 0, "https": 0, "popups": 0} if private else load_privacy_stats()
         self.session_stats = {"params": 0, "https": 0, "popups": 0}
         self._closed_tabs = []
+        self._permission_refusals = {}  # (site, what it asked) -> times answered No without "Remember"
         self._http_allowed_hosts = set()
         self._http_tokens = {}
         self._lookalike_tokens = {}
@@ -4792,6 +4795,9 @@ class ArrowBrowserWindow(Gtk.Window):
         self.find_bar.set_no_show_all(True)
         self.find_bar.hide()
         self.overlay.add_overlay(self.find_bar)
+
+        # What settings.json held when this window read it: save_settings() writes only what changes from it.
+        self._settings_seen = json.loads(json.dumps(self._settings_snapshot()))
 
         # Restore Session or Open Initial Tab (private windows never read or
         # write session.json, so no private URL ever touches disk)
@@ -5931,9 +5937,14 @@ class ArrowBrowserWindow(Gtk.Window):
         if hit.context_is_link():
             uri = hit.get_link_uri()
             web_link = uri.startswith(("http://", "https://"))
+            # Opened by Arrow, a link isn't held to what the page itself may open: a website can't send you to
+            # a file on this computer or a data: page made to look like a bank. Files may link to files.
+            may_open = web_link or (uri.startswith("file:") and (webview.get_uri() or "").startswith("file:"))
             for index, item in enumerate(menu.get_items()):
                 if item.get_stock_action() == WebKit2.ContextMenuAction.OPEN_LINK_IN_NEW_WINDOW:
                     menu.remove(item)
+                    if not may_open:
+                        continue
                     menu.insert(entry("arrow-open-link-in-new-tab", "Open Link in New _Tab",
                                       lambda: self.create_new_tab(uri)), index)
                     if web_link and not self.is_private:
@@ -8277,8 +8288,16 @@ class ArrowBrowserWindow(Gtk.Window):
             # create_new_tab()/apply_dark_reader_to_webview() applies to every
             # document this webview loads.
 
-    def save_settings(self):
-        save_persistent_settings(self._settings_snapshot())
+    def save_settings(self, everything=False):
+        """Write the settings this window changed. Each window read settings.json when it opened, so its copy
+        of the others may be out of date: a private window used to write back dark mode as it was when the
+        window opened, undoing what was changed in the normal window since. everything=True (a restored
+        backup) writes this window's whole copy."""
+        snapshot = self._settings_snapshot()
+        seen = getattr(self, "_settings_seen", {})
+        changed = snapshot if everything else {k: v for k, v in snapshot.items() if k not in seen or seen[k] != v}
+        save_persistent_settings({**snapshot, **load_persistent_settings(), **changed})
+        self._settings_seen = json.loads(json.dumps(snapshot))  # a copy: lists like the search engines change in place
 
     # settings.json keys whose attribute has another name
     _SETTING_ATTRS = {"dark_mode": "dark_mode_active"}
@@ -8933,7 +8952,8 @@ class ArrowBrowserWindow(Gtk.Window):
         nav.connect("row-selected", on_nav_selected)
         stack.connect("notify::visible-child-name", on_page_changed)
         if self.is_private:
-            sidebar.pack_start(self._hint("🕵 Private window: history, import and site data aren't saved here."),
+            sidebar.pack_start(self._hint("🕵 Private window: history, import and site data aren't saved here. "
+                                          "Clear browsing data from a normal window."),
                                False, False, 0)
 
         body.pack_start(sidebar, False, False, 0)
@@ -9254,12 +9274,12 @@ class ArrowBrowserWindow(Gtk.Window):
                                       "Open", lambda: close_then(self.open_history_tab)),
         )
 
-        self._settings_section(
-            data, "CLEAR BROWSING DATA",
-            self._settings_button_row("🗑️", "Clear history, cookies and cache",
-                                      "Signs you out of most sites. Bookmarks and saved passwords are kept.",
-                                      "Clear now…", _confirm_clear, style="settings-danger-btn"),
-        )
+        clear_row = self._settings_button_row("🗑️", "Clear history, cookies and cache",
+                                              "Signs you out of most sites. Bookmarks and saved passwords are kept.",
+                                              "Clear now…", _confirm_clear, style="settings-danger-btn")
+        # A private window's own data goes when it closes; clearing here would miss the normal window's.
+        clear_row._arrow_button.set_sensitive(not self.is_private)
+        self._settings_section(data, "CLEAR BROWSING DATA", clear_row)
 
         import_row = self._settings_button_row(
             "📥", "Import from another browser",
@@ -9641,6 +9661,8 @@ class ArrowBrowserWindow(Gtk.Window):
                           f"while you're on {request.get_current_domain()}")
         return None, None
 
+    PERMISSION_ASK_LIMIT = 3  # No this many times, and the site's later requests are turned down without asking
+
     def on_permission_request(self, webview, request):
         host = site_host_of(webview.get_uri())
         # Names of camera and microphone devices: only for a site already allowed to use them.
@@ -9671,6 +9693,13 @@ class ArrowBrowserWindow(Gtk.Window):
             self._count_event("notifications")
             self.statusbar.push(self.context_id, f"🔕 Blocked {host or 'this page'}'s request to show notifications")
             return True
+        # The question holds up the whole window, and a page could ask again the moment it was told No.
+        asked = (host, what)
+        if self._permission_refusals.get(asked, 0) >= self.PERMISSION_ASK_LIMIT:
+            request.deny()
+            self.statusbar.push(self.context_id, f"🚫 {host or 'This page'} asked again to {what}: "
+                                                 f"not asking you any more until Arrow Browser restarts")
+            return True
 
         dialog = Gtk.MessageDialog(
             transient_for=self,
@@ -9691,6 +9720,10 @@ class ArrowBrowserWindow(Gtk.Window):
         remember = bool(remember_chk and remember_chk.get_active())
         dialog.destroy()
         allowed = response == Gtk.ResponseType.YES
+        if allowed:
+            self._permission_refusals.pop(asked, None)
+        elif not remember:
+            self._permission_refusals[asked] = self._permission_refusals.get(asked, 0) + 1
         if remember:
             set_site_value(self.site_settings, host, "permissions", "allow" if allowed else "deny", sub=kind)
             self._save_site_settings()
@@ -10844,7 +10877,7 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
             mark_clear_on_exit_pending()
         else:
             unmark_clear_on_exit_pending()
-        self.save_settings()
+        self.save_settings(everything=True)
         self.url_entry.set_placeholder_text(f"Search {self.search_engine} or enter URL...")
         for host, entry in backup["site_settings"].items():
             self.site_settings[host] = {**self.site_settings.get(host, {}), **entry}
@@ -11937,6 +11970,12 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         threading.Thread(target=worker, daemon=True).start()
 
     def on_clear_cache_clicked(self, btn):
+        if self.is_private:
+            # It would clear only this window's throw-away data, and the empty history it wrote would be
+            # overwritten by the normal window's next save.
+            self.statusbar.push(self.context_id, "Clear browsing data from a normal window; "
+                                                 "this private window's data goes when you close it")
+            return
         try:
             if hasattr(self.context, "get_website_data_manager"):
                 wdm = self.context.get_website_data_manager()
@@ -12001,7 +12040,10 @@ INSTANCE_OBJECT_PATH = "/io/github/Sangam1112/ArrowBrowser"
 INSTANCE_XML = f"""<node><interface name="{INSTANCE_INTERFACE}"><method name="Open">
 <arg type="as" name="uris" direction="in"/><arg type="s" name="activation_token" direction="in"/>
 </method></interface></node>"""
-INSTANCE_HANDOFF_TIMEOUT_MS = 5000
+# The running browser answers from its main loop, which only starts once its window is built: restoring a
+# session on a slow computer can take longer than 5 s, and the later launch then started a second browser
+# (and the link still opened in the first one too, once it got to it). A stuck browser costs this long.
+INSTANCE_HANDOFF_TIMEOUT_MS = 30000
 
 
 def instance_bus_name():
