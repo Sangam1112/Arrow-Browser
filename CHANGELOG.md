@@ -4,6 +4,21 @@ All notable changes to Arrow Browser. Versions follow `MAJOR.MINOR.PATCH`.
 Releases are signed; the in-app updater only installs a release whose signature verifies.
 Notes from before 1.0.0 (Bharat Browser, and Arrow up to 1.6.9 in the old repository) are in [docs/HISTORY.md](docs/HISTORY.md).
 
+## [1.0.9] - 2026-11-03
+
+### Added
+- **Ads in YouTube videos are blocked.** YouTube sends its ads from its own servers, the same as the videos, so the ad list couldn't stop them. Arrow now takes the ads out of each video's player data before the player sees them, on youtube.com and in YouTube players on other sites. If an ad still gets through, it plays muted and sped up and Skip is pressed for you; the video's sound comes back after. Ad boxes in the feed, beside videos and in search are hidden too. It is part of "Block ads and trackers": off with it, and on sites where you turned ad blocking off from the padlock.
+
+### Fixed
+- **A private window no longer undoes settings changed in your normal window.** Each window kept the settings it read when it opened and wrote all of them back on any change. Turning on dark mode in the normal window and then changing something in a private window turned dark mode off again. A window now saves only what it changed itself.
+- **"Clear history, cookies and cache" is left to the normal window.** In a private window it cleared only that window's throw-away data, while your real history, cookies and cache stayed. The button is greyed out there now; a private window's data goes when you close it.
+- **A site can't keep asking for your camera, microphone or location.** The question holds up the whole window, and a page could ask again right after you said No. After three Nos (without "Remember") the site's requests are turned down without asking until Arrow restarts.
+- **Right-click "Open Link in New Tab" only opens web links.** A website could offer a link to a file on your computer or a made-up `data:` page (for example one made to look like your bank), which Arrow then opened. Files you open yourself can still link to other files.
+- **A link opened while Arrow is still starting no longer starts a second Arrow.** A new launch waited only 5 seconds for the running browser; restoring many tabs on a slow computer takes longer. It now waits up to 30 seconds.
+- **Settings survive a power cut.** Files were swapped in before they had reached the disk, so a power cut right then could still leave one empty.
+- **Dark mode: picture captchas are no longer inverted** ("select all squares with traffic lights" on reCAPTCHA, hCaptcha and Arkose), and players from more video sites (Wistia, Streamable, Kaltura, Loom, Vidyard) are turned back.
+- **Dark mode: videos on Reddit, MSN and other sites whose player is a web component no longer show inverted**, and neither does a video you put in fullscreen.
+
 ## [1.0.8] - 2026-10-29
 
 ### Added
