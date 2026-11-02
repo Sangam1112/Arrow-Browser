@@ -4137,6 +4137,98 @@ def load_url_rules_providers():
         return {}, 0.0
 SPONSORBLOCK_PAGES = ["https://www.youtube.com/*", "https://youtube.com/*", "https://m.youtube.com/*"]
 
+# --- YouTube ads -----------------------------------------------------------------------------------------------
+# YouTube serves its ads from its own servers, the same as its videos, so the ad blocker can't stop them by address
+# (youtube.com is never blocked: that would break the videos). Each video's player data instead carries the list of
+# ads to play; YOUTUBE_ADS_JS takes that list out before the player reads it, so there is no ad to play. It runs in
+# the page's own world, the only place the player's data passes through, on YouTube pages and on YouTube players
+# embedded in other sites. Part of ad blocking: off with it, and on sites where the padlock turns it off.
+YOUTUBE_PAGES = ["https://www.youtube.com/*", "https://youtube.com/*", "https://m.youtube.com/*",
+                 "https://music.youtube.com/*", "https://www.youtube-nocookie.com/*"]
+YOUTUBE_AD_KEYS = ("adPlacements", "adSlots", "playerAds", "adBreakHeartbeatParams")
+YOUTUBE_ADS_JS = r"""
+(() => {
+  const key = Symbol.for('arrow-youtube-ads');
+  if (window[key]) return;
+  Object.defineProperty(window, key, {value: true});
+  const AD_KEYS = %s;
+  const prune = response => {
+    for (const name of AD_KEYS) if (name in response) delete response[name];
+    // the "Ad blockers are not allowed on YouTube" message, if the data asks for it
+    const messages = response.auxiliaryUi && response.auxiliaryUi.messageRenderers;
+    if (messages) delete messages.bkaEnforcementMessageViewModel;
+  };
+  // A player response is the whole object (/youtubei/v1/player) or sits under playerResponse (watch pages, the
+  // next video's prefetch), sometimes in a list of those.
+  const clean = data => {
+    if (!data || typeof data !== 'object') return data;
+    try {
+      for (const item of Array.isArray(data) ? data : [data]) {
+        if (!item || typeof item !== 'object') continue;
+        if (item.playerResponse && typeof item.playerResponse === 'object') prune(item.playerResponse);
+        if (AD_KEYS.some(name => name in item)) prune(item);
+      }
+    } catch (e) {}
+    return data;
+  };
+  // 1. The first video of a page: `var ytInitialPlayerResponse = {...}` in the page's HTML.
+  let initial;
+  try {
+    Object.defineProperty(window, 'ytInitialPlayerResponse', {
+      configurable: true, enumerable: true, get: () => initial, set: value => { initial = clean(value); },
+    });
+  } catch (e) {}
+  // 2. Every later video, the players embedded in other sites (their data is a JSON string) and the player's own
+  //    requests, whether read with JSON.parse or with fetch's response.json().
+  const parse = JSON.parse, json = Response.prototype.json;
+  const wrappers = {
+    parse(text, reviver) { return clean(parse.call(this, text, reviver)); },
+    json() { return json.call(this).then(clean); },
+  };
+  JSON.parse = wrappers.parse;
+  Response.prototype.json = wrappers.json;
+})();
+""" % json.dumps(list(YOUTUBE_AD_KEYS))
+# In case an ad gets through anyway (YouTube changes how it sends them every few months): while the player shows
+# one, it plays muted at 16x and Skip is pressed; the video's own sound and speed come back after. It never seeks:
+# an ad stitched into the video itself would make "jump to the end" skip the whole video. Arrow's own world.
+YOUTUBE_AD_WORLD = "arrow-youtube"
+YOUTUBE_AD_SKIP_JS = r"""
+(() => {
+  let saved = null;
+  setInterval(() => {
+    const player = document.querySelector('.html5-video-player');
+    const video = player && player.querySelector('video');
+    const ad = player && (player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting'));
+    if (ad && video) {
+      if (!saved || saved.video !== video) saved = {video, muted: video.muted, rate: video.playbackRate};
+      video.muted = true;
+      if (video.playbackRate !== 16) video.playbackRate = 16;
+      for (const button of player.querySelectorAll('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern'))
+        button.click();
+    } else if (saved) {
+      saved.video.muted = saved.muted;
+      saved.video.playbackRate = saved.rate === 16 ? 1 : saved.rate;
+      saved = null;
+    }
+  }, 250);
+})();
+"""
+# Ad boxes on YouTube pages that aren't in the player: the home page banner, ads in the feed, beside a video and in
+# search results, and the "Ad blockers are not allowed" pop-up.
+YOUTUBE_ADS_CSS = """
+#masthead-ad, ytd-ad-slot-renderer, ytd-rich-item-renderer:has(ytd-ad-slot-renderer), ytd-in-feed-ad-layout-renderer,
+ytd-banner-promo-renderer, ytd-statement-banner-renderer, ytd-promoted-sparkles-web-renderer,
+ytd-promoted-video-renderer, ytd-display-ad-renderer, ytd-compact-promoted-video-renderer,
+ytd-action-companion-ad-renderer, ytd-player-legacy-desktop-watch-ads-renderer, #player-ads,
+ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-ads"], ytd-search-pyv-renderer,
+ytd-merch-shelf-renderer, .ytp-ad-overlay-container, .ytp-ad-image-overlay, .ytp-featured-product,
+ytm-promoted-sparkles-web-renderer, ytm-companion-ad-renderer, ad-slot-renderer, ytm-ad-slot-renderer,
+ytd-enforcement-message-view-model, tp-yt-paper-dialog:has(ytd-enforcement-message-view-model) {
+    display: none !important;
+}
+"""
+
 # What the user has selected, in the page or in the text box they're in (the clipboard guard compares it with what
 # was copied). Runs in Arrow's own script world.
 COPIED_SELECTION_JS = r"""
@@ -4717,6 +4809,17 @@ class ArrowBrowserWindow(Gtk.Window):
             self.sponsorblock_script = WebKit2.UserScript.new_for_world(
                 SPONSORBLOCK_JS, WebKit2.UserContentInjectedFrames.TOP_FRAME,
                 WebKit2.UserScriptInjectionTime.START, SPONSORBLOCK_WORLD, SPONSORBLOCK_PAGES, None)
+
+        # YouTube ad blocking (see YOUTUBE_ADS_JS), added and removed with the ad blocker by _set_youtube_adblock.
+        self.youtube_ads_script = WebKit2.UserScript(
+            YOUTUBE_ADS_JS, WebKit2.UserContentInjectedFrames.ALL_FRAMES,
+            WebKit2.UserScriptInjectionTime.START, YOUTUBE_PAGES, None)
+        self.youtube_ad_skip_script = WebKit2.UserScript.new_for_world(
+            YOUTUBE_AD_SKIP_JS, WebKit2.UserContentInjectedFrames.ALL_FRAMES,
+            WebKit2.UserScriptInjectionTime.START, YOUTUBE_AD_WORLD, YOUTUBE_PAGES, None)
+        self.youtube_ads_stylesheet = WebKit2.UserStyleSheet(
+            YOUTUBE_ADS_CSS, WebKit2.UserContentInjectedFrames.ALL_FRAMES,
+            WebKit2.UserStyleLevel.USER, YOUTUBE_PAGES, None)
 
         self.failed_loads_script = None
         if hasattr(WebKit2.UserScript, "new_for_world"):
@@ -5633,6 +5736,7 @@ class ArrowBrowserWindow(Gtk.Window):
             ucm._arrow_filters = self._active_filters()
             for content_filter in ucm._arrow_filters:
                 ucm.add_filter(content_filter)
+            self._set_youtube_adblock(ucm, self.adblock_enabled)
         self._sync_https_filter(ucm)
         self._setup_link_cleaning(ucm)
 
@@ -9231,7 +9335,8 @@ class ArrowBrowserWindow(Gtk.Window):
         self._settings_section(
             priv, "BLOCKING",
             switch("adblock_enabled", "🛡️", "Block ads and trackers",
-                   "Stops known ad and tracking servers on every site. Sign-in pages and captchas keep working.",
+                   "Stops known ad and tracking servers on every site, and the ads in YouTube videos. "
+                   "Sign-in pages and captchas keep working.",
                    store("adblock_enabled")),
             switch("hide_cookie_banners", "🍪", "Hide cookie banners",
                    "Hides \"Accept cookies\" pop-ups and bars. Nothing is accepted for you. "
@@ -9660,7 +9765,24 @@ class ArrowBrowserWindow(Gtk.Window):
             if not any(content_filter is i for i in installed):
                 ucm.add_filter(content_filter)
         ucm._arrow_filters = wanted
+        self._set_youtube_adblock(ucm, want)
         return want
+
+    def _set_youtube_adblock(self, ucm, on):
+        """YouTube's ad blocking (YOUTUBE_ADS_JS, the fallback skipper, the ad-box hiding) on or off in a content
+        manager, together with the ad blocker. Only YouTube pages and players get them. A page already showing
+        changes at its next load."""
+        if getattr(ucm, "_arrow_youtube_ads", False) == on:
+            return
+        if on:
+            ucm.add_script(self.youtube_ads_script)
+            ucm.add_script(self.youtube_ad_skip_script)
+            ucm.add_style_sheet(self.youtube_ads_stylesheet)
+        else:
+            ucm.remove_script(self.youtube_ads_script)
+            ucm.remove_script(self.youtube_ad_skip_script)
+            ucm.remove_style_sheet(self.youtube_ads_stylesheet)
+        ucm._arrow_youtube_ads = on
 
     def _apply_site_policy(self, webview, host):
         """Make this webview's content blocker / JavaScript setting match the
@@ -11480,7 +11602,8 @@ td.c{{text-align:right;color:#cbd5e1;width:70px}}td.b{{width:30%}}td.b span{{dis
         self._settings_section(
             privacy, "PROTECTION",
             switch("adblock_enabled", "🛡️", "Block ads and trackers",
-                   "Stops known ad and tracking servers on every site.", store("adblock_enabled")),
+                   "Stops known ad and tracking servers on every site, and the ads in YouTube videos.",
+                   store("adblock_enabled")),
             switch("clearurls_enabled", "🔗", "Remove tracking tags from links",
                    "Strips utm_*, fbclid, gclid and similar tags before pages load.", self.on_clearurls_toggled),
             switch("https_enabled", "🔒", "Always use secure connections (HTTPS)",

@@ -122,6 +122,15 @@ PAGES = {
                   "<iframe id='yt' src='about:blank#https://www.youtube.com/embed/x' style='width:200px;height:100px'>"
                   "</iframe><button id='b' style='width:200px;height:60px'>full</button><script>"
                   "b.onclick = () => document.getElementById(window.target).requestFullscreen();</script></body></html>"),
+    # Stand-ins for YouTube (its ad blocking is pointed at this server in the test): the first video's data in the
+    # page, an embedded player's data as a JSON string, the player's own request, and an ad box
+    "/ytads": ("<html><title>ytads</title><body><div id='masthead-ad'>ad</div><div id='feed'>videos</div>"
+               "<div class='html5-video-player' id='player'><video id='v'></video></div><script>"
+               "var ytInitialPlayerResponse = {videoDetails: {videoId: 'x'}, adPlacements: [1], playerAds: [1], adSlots: [1]};"
+               "window.embed = JSON.parse('{\"playerResponse\": {\"adSlots\": [1], \"videoDetails\": {}}}');"
+               "fetch('/ytplayer.json').then(r => r.json()).then(d => { window.fetched = d; });"
+               "</script></body></html>"),
+    "/ytplayer.json": '{"videoDetails": {"videoId": "y"}, "adPlacements": [1], "playerAds": [1], "adBreakHeartbeatParams": "x"}',
     "/hiding": ("<html><title>hiding</title><body><div id='ad' class='arrow-test-ad'>ad</div>"
                 "<div id='ck' class='arrow-test-cookie'>cookies</div><div id='site' class='arrow-site-only'>site</div>"
                 "<p id='ok'>text</p></body></html>"),
@@ -1459,6 +1468,59 @@ class WindowFeatureTests(unittest.TestCase):
         self.assertEqual(self.padlock_blocked_text(), "🛡️ Nothing on this page needed blocking.")
         bb.set_site_value(self.win.site_settings, "127.0.0.1", "adblock", False)
         self.assertEqual(self.padlock_blocked_text(), "🛡️ Ad and tracker blocking is off for this site.")
+
+    def youtube_ads_here(self):
+        """Point the YouTube ad blocking at this test server (it is only added to YouTube pages) for new tabs."""
+        win, here = self.win, ["http://127.0.0.1/*"]  # WebKit's page patterns have no port
+        frames = bb.WebKit2.UserContentInjectedFrames.ALL_FRAMES
+        start = bb.WebKit2.UserScriptInjectionTime.START
+        for name, made in (
+                ("youtube_ads_script", bb.WebKit2.UserScript(bb.YOUTUBE_ADS_JS, frames, start, here, None)),
+                ("youtube_ad_skip_script", bb.WebKit2.UserScript.new_for_world(
+                    bb.YOUTUBE_AD_SKIP_JS, frames, start, bb.YOUTUBE_AD_WORLD, here, None)),
+                ("youtube_ads_stylesheet", bb.WebKit2.UserStyleSheet(
+                    bb.YOUTUBE_ADS_CSS, frames, bb.WebKit2.UserStyleLevel.USER, here, None))):
+            self.addCleanup(setattr, win, name, getattr(win, name))
+            setattr(win, name, made)
+
+    def test_youtube_ads_are_taken_out_of_the_players_data(self):
+        # YouTube sends its ads from its own servers, so the ad blocker let every one through; each video's data
+        # lists the ads to play, and they are now removed before the player reads it.
+        win = self.win
+        self.addCleanup(self.close_new_tabs, win._tab_boxes())
+        self.youtube_ads_here()
+        wv = self.open_tab("/ytads", "ytads")._arrow_webview
+        self.assertTrue(spin(lambda: js(wv, "String(!!window.fetched)") == "true", 5), "the player's request never came back")
+        state = ("JSON.stringify([ytInitialPlayerResponse, embed.playerResponse, fetched].map(d => Object.keys(d).sort()))"
+                 " + [document.getElementById('masthead-ad'), document.getElementById('feed')]"
+                 ".map(e => e.getClientRects().length)")
+        self.assertEqual(js(wv, state), '[["videoDetails"],["videoDetails"],["videoDetails"]]0,1',
+                         "page data, embedded player and the player's request all without ads; the ad box hidden")
+        self.assertEqual(js(wv, "ytInitialPlayerResponse.videoDetails.videoId + fetched.videoDetails.videoId"), "xy")
+        # where the padlock turns ad blocking off, YouTube's ads stay too
+        bb.set_site_value(win.site_settings, "127.0.0.1", "adblock", False)
+        self.addCleanup(bb.set_site_value, win.site_settings, "127.0.0.1", "adblock", None)
+        wv.reload()
+        self.assertTrue(spin(lambda: js(wv, "String(!!window.fetched)") == "true", 5))
+        self.assertEqual(js(wv, "String('adPlacements' in ytInitialPlayerResponse && 'playerAds' in fetched)"), "true")
+        self.assertEqual(js(wv, "String(document.getElementById('masthead-ad').getClientRects().length)"), "1")
+
+    def test_an_ad_that_gets_through_plays_muted_and_fast_and_the_video_gets_its_sound_back(self):
+        win = self.win
+        self.addCleanup(self.close_new_tabs, win._tab_boxes())
+        self.youtube_ads_here()
+        wv = self.open_tab("/ytads", "ytads")._arrow_webview
+        js(wv, "v.playbackRate = 1.5; player.classList.add('ad-showing'); 1")
+        self.assertTrue(spin(lambda: js(wv, "v.muted + ' ' + v.playbackRate") == "true 16", 2), js(wv, "v.muted + ' ' + v.playbackRate"))
+        self.assertEqual(js(wv, "String(v.currentTime)"), "0", "never seeks: an ad inside the video would skip it all")
+        js(wv, "player.classList.remove('ad-showing'); 1")
+        self.assertTrue(spin(lambda: js(wv, "v.muted + ' ' + v.playbackRate") == "false 1.5", 2), "sound and speed back")
+
+    def test_youtube_ad_blocking_stays_on_youtube(self):
+        # It changes JSON.parse and fetch for the page, so other sites must not get it.
+        self.addCleanup(self.close_new_tabs, self.win._tab_boxes())
+        wv = self.open_tab("/ytads", "ytads")._arrow_webview
+        self.assertEqual(js(wv, "String(JSON.parse.toString().includes('[native code]') && 'adPlacements' in ytInitialPlayerResponse)"), "true")
 
     def test_notification_requests_can_be_blocked_for_every_site(self):
         win = self.win
