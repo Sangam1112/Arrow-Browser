@@ -98,7 +98,30 @@ PAGES = {
     "/darkvideo": ("<html><title>darkvideo</title><body>"
                    "<iframe id='yt' src='about:blank#https://www.youtube-nocookie.com/embed/x'></iframe>"
                    "<iframe id='player' src='about:blank#/video-player/1'></iframe>"
-                   "<iframe id='comments' src='about:blank#/comments'></iframe></body></html>"),
+                   "<iframe id='comments' src='about:blank#/comments'></iframe>"
+                   "<iframe id='wistia' src='about:blank#https://fast.wistia.net/embed/iframe/x'></iframe>"
+                   "<iframe id='recaptcha' src='about:blank#https://www.google.com/recaptcha/api2/bframe'></iframe>"
+                   "<iframe id='hcaptcha' src='about:blank#https://newassets.hcaptcha.com/captcha/v1/x'></iframe>"
+                   "</body></html>"),
+    # players that keep their <video> inside a web component (Reddit, MSN, Mux): open, closed, and one that
+    # sets its own sheets afterwards the way Lit does
+    "/darkshadow": ("<html><title>darkshadow</title><body><open-player id='open'></open-player>"
+                    "<closed-player></closed-player><lit-player id='lit'></lit-player><script>"
+                    "customElements.define('open-player', class extends HTMLElement { constructor() { super();"
+                    " this.attachShadow({mode: 'open'}).innerHTML = '<div><video></video></div>'; } });"
+                    "customElements.define('closed-player', class extends HTMLElement { constructor() { super();"
+                    " window.closedRoot = this.attachShadow({mode: 'closed'}); closedRoot.innerHTML = '<video></video>'; } });"
+                    "customElements.define('lit-player', class extends HTMLElement { constructor() { super();"
+                    " const root = this.attachShadow({mode: 'open'}); const sheet = new CSSStyleSheet();"
+                    " sheet.replaceSync('video { outline: 1px solid red }'); root.adoptedStyleSheets = [sheet];"
+                    " root.innerHTML = '<video></video>'; } });"
+                    "</script></body></html>"),
+    # a player whose box goes fullscreen (most sites), and a YouTube embed that goes fullscreen by itself
+    "/darkfull": ("<html><title>darkfull</title><body style='margin:0'>"
+                  "<div id='box' style='width:200px;height:100px'><video id='v'></video></div>"
+                  "<iframe id='yt' src='about:blank#https://www.youtube.com/embed/x' style='width:200px;height:100px'>"
+                  "</iframe><button id='b' style='width:200px;height:60px'>full</button><script>"
+                  "b.onclick = () => document.getElementById(window.target).requestFullscreen();</script></body></html>"),
     "/hiding": ("<html><title>hiding</title><body><div id='ad' class='arrow-test-ad'>ad</div>"
                 "<div id='ck' class='arrow-test-cookie'>cookies</div><div id='site' class='arrow-site-only'>site</div>"
                 "<p id='ok'>text</p></body></html>"),
@@ -475,6 +498,55 @@ class WindowFeatureTests(unittest.TestCase):
         self.assertIn("invert(1)", yt, "YouTube embed turned back")
         self.assertIn("invert(1)", player, "a site's own video player turned back")
         self.assertEqual(comments, "none", "other iframes stay darkened with the page")
+        # Picture puzzles ("select all traffic lights") were inverted, and players from more video sites
+        more = "JSON.stringify(['wistia', 'recaptcha', 'hcaptcha'].map(id => getComputedStyle(document.getElementById(id)).filter))"
+        for frame, value in zip(("wistia", "recaptcha", "hcaptcha"), json.loads(js(wv, more))):
+            self.assertIn("invert(1)", value, frame)
+
+    def test_dark_mode_turns_back_videos_inside_web_components(self):
+        # No page-wide stylesheet reaches inside a web component, so a <video> there stayed inverted with the page.
+        win = self.win
+        win.set_dark_mode(True)
+        self.addCleanup(win.set_dark_mode, False)
+        self.addCleanup(self.close_new_tabs, win._tab_boxes())
+        wv = self.open_tab("/darkshadow", "darkshadow")._arrow_webview
+        filters = ("JSON.stringify([document.getElementById('open').shadowRoot, closedRoot, "
+                   "document.getElementById('lit').shadowRoot].map(r => getComputedStyle(r.querySelector('video')).filter))")
+        self.assertTrue(spin(lambda: "invert" in (js(wv, filters) or ""), 3), js(wv, filters))
+        for player, value in zip(("open", "closed", "Lit-style"), json.loads(js(wv, filters))):
+            self.assertIn("invert(1)", value, player)
+        self.assertEqual(js(wv, "getComputedStyle(document.getElementById('lit').shadowRoot.querySelector('video'))"
+                                ".outlineStyle"), "solid", "the component's own sheet still applies")
+        js(wv, "document.documentElement.setAttribute('%s', ''); 1" % bb.DARK_NATIVE_ATTR)
+        self.assertEqual(set(json.loads(js(wv, filters))), {"none"}, "a page that is dark already is left alone")
+        js(wv, "document.documentElement.removeAttribute('%s'); 1" % bb.DARK_NATIVE_ATTR)
+        win.set_dark_mode(False)
+        self.assertEqual(set(json.loads(js(wv, filters))), {"none"}, "nothing left behind with dark mode off")
+
+    def test_dark_mode_keeps_fullscreen_videos_the_right_way_round(self):
+        # A fullscreen player is drawn above the page, where the filter on <html> doesn't reach: only the video's
+        # own turn-back applied, so fullscreen videos (YouTube embeds too) showed inverted.
+        win = self.win
+        win.set_dark_mode(True)
+        self.addCleanup(win.set_dark_mode, False)
+        self.addCleanup(self.close_new_tabs, win._tab_boxes())
+        # Only the page goes fullscreen, not the window: that would switch its GPU mode (see the tab freeze notes).
+        self.addCleanup(delattr, win, "on_webview_enter_fullscreen")
+        self.addCleanup(delattr, win, "on_webview_leave_fullscreen")
+        win.on_webview_enter_fullscreen = win.on_webview_leave_fullscreen = lambda *_a: True
+        tab = self.open_tab("/darkfull", "darkfull")
+        wv = tab._arrow_webview
+        win.notebook.set_current_page(win.notebook.page_num(tab))
+        for target, expected in (("box", "invert(0.9)"), ("yt", "none")):
+            js(wv, f"window.target = '{target}'; 1")
+            self.mouse_click(wv, "b", 1)
+            self.assertTrue(spin(lambda: js(wv, "String(document.fullscreenElement && document.fullscreenElement.id)")
+                                 == target, 3), f"{target} never went fullscreen")
+            self.assertIn(expected, js(wv, f"getComputedStyle(document.getElementById('{target}')).filter"), target)
+            if target == "box":
+                self.assertIn("invert(1)", js(wv, "getComputedStyle(v).filter"), "the video inside is turned back")
+            js(wv, "document.exitFullscreen(); 1")
+            self.assertTrue(spin(lambda: js(wv, "String(!document.fullscreenElement)") == "true", 3))
 
     def test_dark_mode_notices_a_dark_theme_that_arrives_while_loading(self):
         # Heavy sites paint long before they finish loading and their dark styles come in between.

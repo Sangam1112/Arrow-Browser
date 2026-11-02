@@ -3564,7 +3564,40 @@ DARK_BG_PICTURE = '[style*="background" i][style*="url(" i]'  # inline backgroun
 # Embedded video players live in iframes. The stylesheet is only added to the top frame, so the inverted page
 # inverted them and nothing turned them back. Other iframes (comments, tweets) stay darkened with the page.
 DARK_VIDEO_FRAME = ('iframe:is([src*="youtube" i], [src*="vimeo.com" i], [src*="dailymotion.com" i],'
-                    ' [src*="jwplayer" i], [src*="jwplatform" i], [src*="player" i])')
+                    ' [src*="jwplayer" i], [src*="jwplatform" i], [src*="player" i], [src*="video" i],'
+                    ' [src*="wistia" i], [src*="streamable.com" i], [src*="kaltura" i], [src*="loom.com" i],'
+                    ' [src*="vidyard" i])')
+# Picture puzzles ("select all squares with traffic lights") are iframes too, and inverted they are hard to
+# solve. Cloudflare's Turnstile is only a tick box and stays darkened.
+DARK_CAPTCHA_FRAME = ('iframe:is([src*="recaptcha" i], [src*="hcaptcha.com" i], [src*="arkoselabs" i],'
+                      ' [src*="funcaptcha" i])')
+_DARK_PARTS = {"bg": DARK_BG_PICTURE,
+               "media": ", ".join(["img, video, canvas, svg", DARK_VIDEO_FRAME, DARK_CAPTCHA_FRAME, DARK_BG_PICTURE])}
+# What turns pictures and players back; `scope` limits it to pages being darkened. Also used inside web
+# components (DARK_SHADOW_CSS), where the page's stylesheets, this one included, don't reach.
+_DARK_MEDIA_RULES = """
+%(scope)s :is(%(media)s) {
+    filter: invert(111%%) hue-rotate(180deg) !important;
+}
+/* A picture set as an element's background (often the "background:url(...)" shorthand, as on
+   cardekho.com) is turned back with its element, and so is everything inside it. So its children
+   are darkened again, except pictures, which are already right there. */
+%(scope)s %(bg)s > :is(%(media)s) {
+    filter: none !important;
+}
+%(scope)s %(bg)s > :not(%(media)s) {
+    filter: invert(90%%) hue-rotate(180deg) !important;
+}
+/* A fullscreen player is drawn above the page, out of reach of the filter on <html>, so only its own
+   turn-back applied and the video showed inverted. It gets the page's darkening itself instead; a
+   video or player frame that is fullscreen by itself needs none. */
+%(scope)s :fullscreen:not(%(media)s) {
+    filter: invert(90%%) hue-rotate(180deg) !important;
+}
+%(scope)s :fullscreen:is(%(media)s) {
+    filter: none !important;
+}
+"""
 DARKREADER_CSS = """
 html:not([%(attr)s]) {
     filter: invert(90%%) hue-rotate(180deg) !important;
@@ -3572,20 +3605,47 @@ html:not([%(attr)s]) {
        be the pre-inversion colour: white inverts (90%%) to a dark #191919,
        whereas #121212 would flip to light grey behind transparent pages. */
     background-color: #ffffff !important;
+    /* Inherited into web components, where DARK_SHADOW_CSS checks for it. */
+    --arrow-dark: 1 !important;
 }
-html:not([%(attr)s]) :is(%(media)s) {
-    filter: invert(111%%) hue-rotate(180deg) !important;
-}
-/* A picture set as an element's background (often the "background:url(...)" shorthand, as on
-   cardekho.com) is turned back with its element, and so is everything inside it. So its children
-   are darkened again, except pictures, which are already right there. */
-html:not([%(attr)s]) %(bg)s > :is(%(media)s) {
-    filter: none !important;
-}
-html:not([%(attr)s]) %(bg)s > :not(%(media)s) {
-    filter: invert(90%%) hue-rotate(180deg) !important;
-}
-""" % {"attr": DARK_NATIVE_ATTR, "bg": DARK_BG_PICTURE, "media": ", ".join(["img, video, canvas, svg", DARK_VIDEO_FRAME, DARK_BG_PICTURE])}
+""" % {"attr": DARK_NATIVE_ATTR} + _DARK_MEDIA_RULES % {"scope": "html:not([%s])" % DARK_NATIVE_ATTR, **_DARK_PARTS}
+# Players such as Reddit's, MSN's or Mux's keep their <video> inside a web component (a shadow root), which
+# no page-wide stylesheet reaches, so the video stayed inverted with the page. DARK_SHADOW_JS gives every
+# shadow root this sheet; it only acts while the page is being darkened (--arrow-dark set on <html>).
+DARK_SHADOW_CSS = "@container style(--arrow-dark: 1) {%s}" % (_DARK_MEDIA_RULES % {"scope": "", **_DARK_PARTS})
+DARK_SHADOW_JS = r"""
+(() => {
+  const key = Symbol.for('arrow-dark-shadow');
+  if (window[key] || typeof ShadowRoot === 'undefined') return;
+  Object.defineProperty(window, key, {value: true});
+  const adopted = Object.getOwnPropertyDescriptor(ShadowRoot.prototype, 'adoptedStyleSheets');
+  if (!adopted || !adopted.set) return;
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(%s);
+  const add = root => {
+    try {
+      const list = adopted.get.call(root);
+      if (!Array.prototype.includes.call(list, sheet)) adopted.set.call(root, [...list, sheet]);
+    } catch (e) {}
+  };
+  // Every new shadow root, open or closed, gets the sheet...
+  const attach = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function attachShadow(init) {
+    const root = attach.call(this, init);
+    add(root);
+    return root;
+  };
+  // ...and keeps it when the component sets its own sheets (Lit replaces the whole list).
+  Object.defineProperty(ShadowRoot.prototype, 'adoptedStyleSheets', {
+    configurable: true, enumerable: adopted.enumerable, get: adopted.get,
+    set(list) { list = Array.from(list); adopted.set.call(this, list.includes(sheet) ? list : [...list, sheet]); },
+  });
+  // Shadow roots written in the HTML (<template shadowrootmode>) and ones made before this ran.
+  const sweep = () => { for (const el of document.querySelectorAll('*')) if (el.shadowRoot) add(el.shadowRoot); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', sweep, {once: true});
+  else sweep();
+})();
+""" % json.dumps(DARK_SHADOW_CSS)
 
 # Bedtime wind-down turns pages grey. The filter has to sit on <html> too (a filter on
 # <body> would make position:fixed headers scroll away), so with dark mode on, the
@@ -4610,6 +4670,10 @@ class ArrowBrowserWindow(Gtk.Window):
         self.dark_detect_script = WebKit2.UserScript.new_for_world(
             DARK_DETECT_JS, WebKit2.UserContentInjectedFrames.TOP_FRAME,
             WebKit2.UserScriptInjectionTime.START, DARK_WORLD, None, None)
+        # In the page's own world: the shadow roots it makes are only reachable there.
+        self.dark_shadow_script = WebKit2.UserScript(
+            DARK_SHADOW_JS, WebKit2.UserContentInjectedFrames.TOP_FRAME,
+            WebKit2.UserScriptInjectionTime.START, None, None)
         self.media_script = WebKit2.UserScript(
             MEDIA_POLYFILL_JS,
             WebKit2.UserContentInjectedFrames.ALL_FRAMES,
@@ -8393,9 +8457,11 @@ class ArrowBrowserWindow(Gtk.Window):
         if enabled:
             ucm.add_style_sheet(self.dark_stylesheet)
             ucm.add_script(self.dark_detect_script)
+            ucm.add_script(self.dark_shadow_script)
         else:
             ucm.remove_style_sheet(self.dark_stylesheet)
             ucm.remove_script(self.dark_detect_script)
+            ucm.remove_script(self.dark_shadow_script)
         ucm._arrow_dark_applied = enabled
 
     def _set_dark_background(self, webview, enabled):
@@ -8411,6 +8477,7 @@ class ArrowBrowserWindow(Gtk.Window):
         # The user script only runs on the next page load; check the page
         # that's already showing now, or an already-dark page goes white.
         webview.run_javascript_in_world(DARK_DETECT_JS, DARK_WORLD, None, None, None)
+        webview.evaluate_javascript(DARK_SHADOW_JS, -1, None, None, None, None, None)
 
     def remove_dark_reader_from_webview(self, webview):
         self._set_dark_stylesheet(webview.get_user_content_manager(), False)
