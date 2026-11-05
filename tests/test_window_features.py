@@ -1562,6 +1562,18 @@ class WindowFeatureTests(unittest.TestCase):
         self.assertEqual({t: i["pid"] for t, i in results.items() if t in again},
                          {t: i["pid"] for t, i in again.items() if t in results})
 
+    def test_closed_tab_webview_is_freed(self):
+        # close_tab once checked for a non-existent is_connected(), so nothing was ever
+        # disconnected and every closed tab's WebView stayed alive for good.
+        import gc, weakref
+        self.win.create_new_tab(self.base + "/blank")
+        spin(lambda: False, 1.0)
+        tab = self.win._tab_boxes()[-1]
+        view = weakref.ref(tab._arrow_webview)
+        self.win.close_tab(tab)
+        del tab
+        self.assertTrue(spin(lambda: (gc.collect(), view() is None)[1], 5), "closed tab's WebView was never freed")
+
     def test_tab_memory_works_next_to_a_busy_tab(self):
         # A busy page used to hide the probe's CPU jump, so every other tab showed "—".
         before = len(self.win._tab_boxes())

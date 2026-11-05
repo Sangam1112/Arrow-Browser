@@ -6362,11 +6362,13 @@ class ArrowBrowserWindow(Gtk.Window):
             self._flush_page_view(webview)
             self._page_view_start.pop(id(webview), None)
 
-            # Disconnect all attached signal handlers to avoid retaining references
+            # Disconnect every handler: the find-controller ones carry the webview as
+            # user data, a cycle through C that Python's GC can't see, so without this
+            # no closed tab's WebView (or its swipe-back page snapshots) is ever freed.
             sig_ids = getattr(webview, '_arrow_sig_ids', [])
             for obj, sig_id in sig_ids:
                 try:
-                    if hasattr(obj, 'is_connected') and obj.is_connected(sig_id):
+                    if obj.handler_is_connected(sig_id):
                         obj.disconnect(sig_id)
                 except Exception:
                     pass
