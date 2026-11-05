@@ -1574,6 +1574,22 @@ class WindowFeatureTests(unittest.TestCase):
         del tab
         self.assertTrue(spin(lambda: (gc.collect(), view() is None)[1], 5), "closed tab's WebView was never freed")
 
+    def test_low_memory_mode_turns_off_swipe_snapshots(self):
+        # Swipe back/forward keeps a ~2 MB screenshot of every page left behind, in the browser's own process.
+        win = self.win
+        was = win.low_memory_mode
+        self.addCleanup(win.on_low_memory_mode_toggled, was)
+        self.win.create_new_tab(self.base + "/blank")
+        tab = win._tab_boxes()[-1]
+        self.addCleanup(lambda: tab.get_parent() and win.close_tab(tab))
+        tab._arrow_webview.set_settings(win._site_settings_variant(True, False))  # a per-site copy
+        for active in (True, False):
+            win.on_low_memory_mode_toggled(active)
+            for view in (win.get_active_webview(), tab._arrow_webview):
+                self.assertEqual(view.get_settings().get_enable_back_forward_navigation_gestures(), not active)
+        win.low_memory_mode = True  # the page memory limit is set when the context is made
+        self.assertIsInstance(win._new_web_context(WebKit2.WebsiteDataManager.new_ephemeral()), WebKit2.WebContext)
+
     def test_tab_memory_works_next_to_a_busy_tab(self):
         # A busy page used to hide the probe's CPU jump, so every other tab showed "—".
         before = len(self.win._tab_boxes())

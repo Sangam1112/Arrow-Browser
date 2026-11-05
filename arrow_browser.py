@@ -4518,13 +4518,13 @@ class ArrowBrowserWindow(Gtk.Window):
             # Ephemeral manager: cookies/cache/storage live only in memory for
             # this window's lifetime and are never written to disk.
             self.data_mgr = WebKit2.WebsiteDataManager.new_ephemeral()
-            self.context = WebKit2.WebContext.new_with_website_data_manager(self.data_mgr)
+            self.context = self._new_web_context(self.data_mgr)
         elif hasattr(WebKit2, 'WebsiteDataManager'):
             self.data_mgr = WebKit2.WebsiteDataManager(
                 base_cache_directory=CACHE_DIR,
                 base_data_directory=CONFIG_DIR
             )
-            self.context = WebKit2.WebContext.new_with_website_data_manager(self.data_mgr)
+            self.context = self._new_web_context(self.data_mgr)
         else:
             self.context = WebKit2.WebContext.get_default()
 
@@ -4576,8 +4576,7 @@ class ArrowBrowserWindow(Gtk.Window):
         # WebKit Settings Optimization
         self.web_settings = WebKit2.Settings()
         self.web_settings.set_enable_developer_extras(self.dev_tools_enabled)
-        if hasattr(self.web_settings, 'set_enable_back_forward_navigation_gestures'):
-            self.web_settings.set_enable_back_forward_navigation_gestures(True)
+        self._apply_swipe_gestures()
         # WebRTC is off by default: RTCPeerConnection can leak a machine's local
         # (and behind some NATs, public) IP via ICE candidates even without any
         # getUserMedia permission grant, which defeats VPN/privacy expectations.
@@ -9496,7 +9495,8 @@ class ArrowBrowserWindow(Gtk.Window):
                    "the camera or microphone, and tabs with text you've typed are kept awake.",
                    store("tab_suspension_enabled")),
             switch("low_memory_mode", "🪶", "Low Memory Mode",
-                   "Uses a much smaller page cache so the browser needs less RAM. Going back a page may reload it.",
+                   "Smaller page cache, no swipe back/forward and earlier memory cleanup, so the browser "
+                   "needs less RAM. Going back a page may reload it.",
                    self.on_low_memory_mode_toggled),
             self._settings_button_row("📈", "Tab Memory", "See which tab is using the most memory, then suspend or close it.",
                                       "Open", lambda: close_then(self.open_tab_memory)),
@@ -9693,9 +9693,38 @@ class ArrowBrowserWindow(Gtk.Window):
         self.passwords_enabled = active
         self.save_settings()
 
+    # WebKit's default limit follows the computer's RAM: on a 7 GB laptop a page process sat at
+    # 1.5 GB of not-yet-collected JavaScript garbage before WebKit cleaned up. With this limit cleanup
+    # starts at about a third of it (stricter at half). Construct-only: it applies from the next start.
+    LOW_MEMORY_PAGE_LIMIT_MB = 1024
+
+    def _new_web_context(self, data_mgr):
+        if self.low_memory_mode and hasattr(WebKit2, "MemoryPressureSettings"):
+            limits = WebKit2.MemoryPressureSettings.new()
+            limits.set_memory_limit(self.LOW_MEMORY_PAGE_LIMIT_MB)
+            limits.set_poll_interval(5.0)  # WebKit's default looks only every 30 s
+            return WebKit2.WebContext(website_data_manager=data_mgr, memory_pressure_settings=limits)
+        return WebKit2.WebContext.new_with_website_data_manager(data_mgr)
+
+    def _apply_swipe_gestures(self):
+        """Touchpad swipe back/forward. WebKit keeps a screenshot of every page left behind for
+        the swipe animation (about 2 MB each, in the browser's own process, with no cap seen up
+        to +200 MB), so Low Memory Mode turns it off."""
+        if not hasattr(self.web_settings, "set_enable_back_forward_navigation_gestures"):
+            return
+        want = not self.low_memory_mode
+        self.web_settings.set_enable_back_forward_navigation_gestures(want)
+        if not hasattr(self, "notebook"):  # called at startup before any tab exists
+            return
+        for tb in self._tab_boxes():
+            settings = tb._arrow_webview.get_settings()  # per-site copies are separate objects
+            if settings is not self.web_settings:
+                settings.set_enable_back_forward_navigation_gestures(want)
+
     def on_low_memory_mode_toggled(self, active):
         self.low_memory_mode = active
         self.save_settings()
+        self._apply_swipe_gestures()
         # Cache model applies to the already-running WebKitWebContext
         # immediately. WEBKIT_USE_SINGLE_WEB_PROCESS is also set for next
         # launch (see the startup env-var logic near the top of the file),
