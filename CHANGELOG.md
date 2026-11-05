@@ -4,6 +4,15 @@ All notable changes to Arrow Browser. Versions follow `MAJOR.MINOR.PATCH`.
 Releases are signed; the in-app updater only installs a release whose signature verifies.
 Notes from before 1.0.0 (Bharat Browser, and Arrow up to 1.6.9 in the old repository) are in [docs/HISTORY.md](docs/HISTORY.md).
 
+## [1.0.10] - 2026-11-05
+
+### Fixed
+- **Closed tabs give their memory back.** Arrow meant to unhook each tab when you closed it, but the check it used never matched, so every closed tab's page stayed in memory, with the pictures of past pages it keeps for swiping back, until you quit Arrow. Closing a tab now frees it.
+
+### Changed
+- **Low Memory Mode turns off swipe back/forward.** To make the swipe animation, the browser keeps a picture of every page you leave, about 2 MB each: 75 MB more after 24 sites in one tab. With Low Memory Mode on it no longer does; Back and Forward still work as normal.
+- **Low Memory Mode cleans up pages much sooner.** Pages often leave memory behind that the engine only clears once it gets very large, so one tab could reach 1.5 GB on a 7 GB laptop. Low Memory Mode now starts that clean-up far earlier: the same pages peak at about 650 MB and settle at about 330 MB. This part starts after restarting Arrow.
+
 ## [1.0.9] - 2026-11-03
 
 ### Added

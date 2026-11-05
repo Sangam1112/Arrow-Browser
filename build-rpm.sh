@@ -78,6 +78,8 @@ python3 -m py_compile /usr/share/arrow-browser/arrow_browser.py >/dev/null 2>&1 
 if [ \$1 -eq 0 ]; then rm -rf /usr/share/arrow-browser/__pycache__; fi
 
 %changelog
+* Thu Nov 05 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.10-1
+- Closed tabs are freed; Low Memory Mode uses much less RAM
 * Tue Nov 03 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.9-1
 - Private-window and permission fixes, dark-mode captchas and fullscreen videos, YouTube ad blocking
 * Thu Oct 29 2026 Arrow Browser Developer <Sangam1112@users.noreply.github.com> - 1.0.8-1
